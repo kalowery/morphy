@@ -1,122 +1,231 @@
 # Morphy
 
-Morphy is a config-driven analytical web app built with Node.js and Express. It provides a single browser application that can project multiple domain-specific front ends over heterogeneous data sources while delegating live analytical reasoning to an embedded server-side agent runtime.
+Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, and generate browser-executable visualization artifacts for individual panels.
 
-## What is implemented
+The current prototype is built with Node.js and Express and is centered on a shared server-side runtime rather than per-browser ad hoc analysis. That makes it suitable for monitoring and analysis domains where multiple users should see the same current operational picture without duplicating expensive model calls.
 
-- Config-driven domain registry in `data/domains/*.json`
-- Config-driven data-source registry in `config/data-sources.json`
-- Pluggable source previews for:
-  - JSON object stores
-  - VictoriaMetrics-compatible time-series endpoints
-  - Relational summary stubs
-- Agent-backed domain generation from a prompt
-- Agent-backed report generation per scaffolded panel
-- Generated browser widget artifacts per completed panel run
-- Persistent run/session state in `data/state`
-- Live browser updates through server-sent events
-- A modern, responsive UI with reserved chart/report panels
+## What Morphy Is Trying To Do
 
-## Runtime model
+Morphy is designed around a few core ideas:
 
-The server centers on an `AgentRuntime` abstraction in `src/services/agent-runtime.js`.
+- One web app can support many analytical domains.
+- Domain identity and baseline scaffolding come from config files.
+- The server-side agent decides what is analytically relevant right now.
+- The browser UI can adapt within bounded rules without becoming unstable.
+- Generated visual artifacts can run in the browser, but only inside a controlled host runtime.
 
-- If `OPENAI_API_KEY` is set, Morphy uses the OpenAI Responses API through the `openai` Node SDK.
-- If no API key is present, Morphy falls back to local synthesized reports so the app remains explorable.
-- Agent state is persisted per domain through the last response id in `data/state/agent-sessions.json`.
-- Analysis runs are persisted as JSON files in `data/state/runs`.
-- Generated widget bundles are persisted in `data/state/widget-bundles`, with metadata indexed in `data/state/widgets/index.json`.
+In practice, that means Morphy can be aimed at:
 
-## Generated browser widgets
+- cluster observability
+- GPU fleet operations
+- scheduler and capacity monitoring
+- warehouse or logistics KPI analysis
+- other data-heavy domains that need a mix of fixed structure and adaptive analysis
 
-Each completed run can produce a browser-executable artifact bundle:
+## Current Example Domain
 
-- `index.html` is a stable iframe host document
-- `styles.css` styles the generated visualization
-- `widget.js` renders the view using a host bridge
-- `manifest.json` records metadata, sandbox mode, and bundle provenance
+The main concrete example in this repo is `hpcfund-cluster-observability`, backed by a historical March 2026 VictoriaMetrics dataset for a GPU cluster.
 
-The host application renders these artifacts in sandboxed iframes and passes scoped panel payloads via `postMessage`. Generated widgets never receive database credentials directly; they receive domain, panel, report, and preview context from the host app.
+That dataset includes signals such as:
 
-## Run it
+- Slurm queue and partition state
+- ROCm GPU telemetry
+- host metrics
+- InfiniBand counters
+- SMART/storage health
+- job and workload correlation signals
 
-1. Install dependencies:
+The domain scaffolding for that dataset lives in [data/domains/hpcfund-cluster-observability.json](/Users/klowery/morphy/data/domains/hpcfund-cluster-observability.json).
+
+## Architecture
+
+### Stable Host Shell
+
+The host application owns:
+
+- routing and page structure
+- datasource configuration
+- domain registry
+- refresh scheduling
+- privileged server-side access to databases and APIs
+- safe embedding of generated browser widgets
+
+The outer shell is intentionally stable. Morphy does not allow arbitrary model-driven mutation of the whole application UI.
+
+### Domain Scaffolding
+
+Domain scaffolding is pre-generated or authored in JSON config. A domain defines:
+
+- domain metadata
+- which data sources it depends on
+- its baseline panel list
+- per-panel analysis prompts
+- preferred chart types
+
+This scaffolding gives the UI a dependable starting shape even before any analysis has run.
+
+### Server-Side Agent Runtime
+
+The server runtime in [src/services/agent-runtime.js](/Users/klowery/morphy/src/services/agent-runtime.js) is responsible for:
+
+- gathering datasource preview context
+- planning the workspace
+- running per-panel analyses
+- persisting analysis state
+- optionally delegating widget generation
+
+If `OPENAI_API_KEY` is present, Morphy uses OpenAI through the Node SDK. If no key is present, it falls back to local synthesized output so the app remains explorable.
+
+### Shared Refresh Model
+
+Morphy no longer assumes that every browser should kick off its own analysis work. Instead, a background coordinator in [src/services/refresh-coordinator.js](/Users/klowery/morphy/src/services/refresh-coordinator.js) refreshes shared state on a cadence.
+
+That shared refresh loop:
+
+- updates datasource previews
+- refreshes workspace plans
+- refreshes selected panel analyses
+- deduplicates equivalent work across users
+- persists the latest domain snapshot
+
+Browsers connect as subscribers. On load they get the latest shared state, and then they receive updates over SSE.
+
+### Workspace Planner
+
+Morphy has a bounded workspace planner. The planner can change:
+
+- focus panel
+- visible panel subset
+- panel grouping
+- collapsed secondary sections
+- recommended operator actions
+
+It cannot arbitrarily rewrite the whole frontend. The planner output is structured JSON, and the client interprets that JSON directly. Freeform rationale text is informational only.
+
+### Generated Browser Widgets
+
+Completed runs can produce browser-executable widget bundles stored under `data/state/widget-bundles`.
+
+Each widget bundle contains:
+
+- `index.html`
+- `styles.css`
+- `widget.js`
+- `manifest.json`
+
+These widgets are served into sandboxed iframes and receive scoped payloads from the host runtime. They never get datasource credentials directly.
+
+The current model is:
+
+- server-side agent decides what panel analysis is needed
+- a report is produced first
+- widget generation is a follow-on enhancement step
+- the native chart remains available as the guaranteed fallback
+
+## Runtime Data Model
+
+Important persisted state includes:
+
+- domain configs in `data/domains`
+- datasource configs in `config/data-sources.json`
+- runs in `data/state/runs`
+- session metadata in `data/state/agent-sessions.json`
+- workspace plans in `data/state/workspace-plans.json`
+- shared live state in `data/state/live-state.json`
+- widget metadata in `data/state/widgets/index.json`
+
+This persistence lets Morphy recover state across server restarts and serve a current view immediately to newly connected browsers.
+
+## Browser Experience
+
+The browser UI is designed around a focused workspace instead of showing every panel at once.
+
+Current UX behavior includes:
+
+- a panel rail with one active panel on stage
+- collapsible debug visibility into planner rationale
+- a studio drawer for infrequent configuration tasks
+- recent runs and source previews as secondary material
+- native charts for baseline readability
+- generated widgets as richer optional artifacts
+
+## Multi-User Behavior
+
+The intended multi-user model is:
+
+- the server continuously maintains a current analytical picture
+- browsers render the most recent persisted state
+- users can request analysis manually
+- normal reruns reuse fresh or in-progress work when possible
+- force reruns bypass reuse and start a fresh analysis
+
+This reduces duplicate model calls and keeps the application closer to a shared monitoring surface than a single-user prompt toy.
+
+## Data Sources
+
+Morphy currently supports preview adapters for:
+
+- JSON object stores / files
+- VictoriaMetrics-compatible time-series endpoints
+- relational sample-row stubs
+
+The current VictoriaMetrics datasource example is in [config/data-sources.json](/Users/klowery/morphy/config/data-sources.json).
+
+For historical datasets, explicit time windows matter. Without `start`, `end`, and an evaluation time, a valid endpoint may appear empty if the data is not current.
+
+## Running Morphy
+
+1. Install dependencies.
 
 ```bash
 npm install
 ```
 
-2. Optionally export an API key:
+2. Export an API key if you want live OpenAI-backed planning, analysis, and widget generation.
 
 ```bash
 export OPENAI_API_KEY=your_key_here
 ```
 
-3. Start the app:
+3. Start the server.
 
 ```bash
 npm start
 ```
 
-4. Open `http://localhost:3000`
+4. Open the app in a browser.
 
-## Config model
-
-### Data source example
-
-```json
-{
-  "id": "victoria-cluster",
-  "name": "VictoriaMetrics HPCFund Cluster",
-  "type": "victoria-metrics",
-  "baseUrl": "http://127.0.0.1:9090",
-  "defaultEvaluationTime": "2026-03-24T23:59:59Z",
-  "start": "2026-03-01T00:00:00Z",
-  "end": "2026-03-24T23:59:59Z",
-  "queries": {
-    "pendingJobsByPartition": "sort_desc(last_over_time(slurm_partition_jobs_pending[30d]))",
-    "hotGpusByTemperature": "topk(10, max by(instance,card) (last_over_time(rocm_temperature_celsius[7d])))"
-  }
-}
+```text
+http://127.0.0.1:3000
 ```
 
-For historical datasets, `start`, `end`, and `defaultEvaluationTime` matter. Without an explicit time window, Morphy may query a valid VictoriaMetrics endpoint and still see an apparently empty dataset if the capture is not current.
+## Key Files
 
-### Domain example
+- [src/server.js](/Users/klowery/morphy/src/server.js): Express app, APIs, SSE, generated widget serving
+- [src/services/agent-runtime.js](/Users/klowery/morphy/src/services/agent-runtime.js): planning and analysis orchestration
+- [src/services/refresh-coordinator.js](/Users/klowery/morphy/src/services/refresh-coordinator.js): shared refresh loop
+- [src/services/widget-service.js](/Users/klowery/morphy/src/services/widget-service.js): widget bundle generation and serving
+- [src/services/data-sources.js](/Users/klowery/morphy/src/services/data-sources.js): datasource previews and VictoriaMetrics access
+- [src/services/config-store.js](/Users/klowery/morphy/src/services/config-store.js): persisted config and runtime state
+- [public/app.js](/Users/klowery/morphy/public/app.js): client-side workspace rendering and event handling
+- [public/runtime/widget-bridge.js](/Users/klowery/morphy/public/runtime/widget-bridge.js): iframe bridge for generated widgets
 
-```json
-{
-  "id": "hpcfund-cluster-observability",
-  "name": "HPCFund Cluster Observability",
-  "description": "Historical observability domain for the HPCFund GPU cluster.",
-  "dataSources": ["victoria-cluster"],
-  "panels": [
-    {
-      "id": "fleet-health",
-      "title": "Fleet Health",
-      "summary": "Rank hosts by operational risk using node, scheduler, GPU, and fabric signals.",
-      "analysisPrompt": "Assess overall cluster health for hpcfund and identify the highest-risk hosts.",
-      "chartPreference": "bar"
-    }
-  ]
-}
-```
+## Current Limitations
 
-## HPCFund dataset notes
+- datasource access is still preview-oriented rather than a full query-planning system
+- relational support is still a stub
+- widget generation is useful but not yet consistently high quality
+- generated browser artifacts are sandboxed, but the validation and CSP story should be tightened before production use
+- auth, tenancy, and operator approval controls are not implemented
 
-The included `victoria-cluster` datasource is now configured around the historical March 2026 `hpcfund` GPU cluster dataset. The metric inventory supports:
+## Direction
 
-- ROCm GPU telemetry and RAS counters
-- Slurm partition, node, queue, and CPU allocation state
-- Node exporter host, memory, storage, and InfiniBand metrics
-- `rmsjob_info` job-to-node-to-user correlation
+The broader direction for Morphy is:
 
-The domain config in `data/domains/hpcfund-cluster-observability.json` is the recommended starting point for exploring that dataset in Morphy.
+- fixed outer shell
+- config-driven domain scaffolding
+- bounded agent-driven workspace adaptation
+- shared server-side analysis refresh
+- generated browser widgets for panel-specific visual artifacts
 
-## Next steps
-
-- Replace the relational stub with real database adapters such as PostgreSQL or MySQL.
-- Add richer query planning tools so the agent can selectively fetch large datasets instead of only previewing them.
-- Add stricter static analysis and CSP enforcement for generated widget artifacts before serving them.
-- Introduce authentication, tenant isolation, and approval flows before allowing live config edits in production.
-- Add a pre-generation CLI that materializes domain scaffolding from saved prompts.
+That combination is meant to let one application serve many domains without reducing the UI to a raw chatbot or requiring a separate hand-built frontend for every dataset.
