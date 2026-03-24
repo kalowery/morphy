@@ -453,8 +453,15 @@ export class WidgetService {
     let html = await fs.readFile(filePath, "utf8");
 
     html = html.replace(
-      /<script\s+type="module"\s+src="([^"]*\/widget\.js)"><\/script>/g,
-      '<script src="$1"></script>'
+      /<script\b([^>]*)\bsrc=(["'])([^"']*\/widget\.js)\2([^>]*)><\/script>/gi,
+      (_match, beforeSrc, _quote, src, afterSrc) => {
+        const normalizedAttrs = `${beforeSrc} ${afterSrc}`
+          .replace(/\btype\s*=\s*(["'])module\1/gi, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const attributePrefix = normalizedAttrs ? ` ${normalizedAttrs}` : "";
+        return `<script${attributePrefix} src="${src}"></script>`;
+      }
     );
 
     if (html.includes("window.__MORPHY_PAYLOAD__")) {

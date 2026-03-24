@@ -34,6 +34,61 @@ const domainSchema = {
   }
 };
 
+const workspacePlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "domainId",
+    "layoutMode",
+    "focusPanelId",
+    "visiblePanelIds",
+    "panelGroups",
+    "collapsedSections",
+    "recommendedActions",
+    "rationale"
+  ],
+  properties: {
+    domainId: { type: "string" },
+    layoutMode: {
+      type: "string",
+      enum: ["focus", "split", "overview"]
+    },
+    focusPanelId: { type: "string" },
+    visiblePanelIds: {
+      type: "array",
+      items: { type: "string" }
+    },
+    panelGroups: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "title", "panelIds"],
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          panelIds: {
+            type: "array",
+            items: { type: "string" }
+          }
+        }
+      }
+    },
+    collapsedSections: {
+      type: "array",
+      items: {
+        type: "string",
+        enum: ["recent-runs", "source-preview"]
+      }
+    },
+    recommendedActions: {
+      type: "array",
+      items: { type: "string" }
+    },
+    rationale: { type: "string" }
+  }
+};
+
 function slugify(value) {
   return value
     .toLowerCase()
@@ -127,6 +182,140 @@ function buildFallbackReport(panel, context) {
   };
 }
 
+function getQuerySample(context, queryName) {
+  for (const preview of context.previews ?? []) {
+    for (const result of preview.detail?.queryResults ?? []) {
+      if (result.queryName === queryName) {
+        return result.sample ?? [];
+      }
+    }
+  }
+
+  return [];
+}
+
+function panelIds(domain) {
+  return domain.panels.map((panel) => panel.id);
+}
+
+function normalizeWorkspacePlan(domain, parsed, preferredPanelId = null) {
+  const validPanelIds = new Set(panelIds(domain));
+  const visiblePanelIds = (Array.isArray(parsed.visiblePanelIds) ? parsed.visiblePanelIds : [])
+    .filter((panelId) => validPanelIds.has(panelId));
+  const nextVisiblePanelIds = visiblePanelIds.length ? visiblePanelIds : panelIds(domain);
+  const focusPanelId = validPanelIds.has(parsed.focusPanelId)
+    ? parsed.focusPanelId
+    : preferredPanelId && validPanelIds.has(preferredPanelId)
+      ? preferredPanelId
+      : nextVisiblePanelIds[0];
+
+  const panelGroups = (Array.isArray(parsed.panelGroups) ? parsed.panelGroups : [])
+    .map((group) => ({
+      id: String(group.id ?? ""),
+      title: String(group.title ?? ""),
+      panelIds: (Array.isArray(group.panelIds) ? group.panelIds : []).filter((panelId) => nextVisiblePanelIds.includes(panelId))
+    }))
+    .filter((group) => group.id && group.title && group.panelIds.length);
+
+  return {
+    domainId: domain.id,
+    layoutMode: ["focus", "split", "overview"].includes(parsed.layoutMode) ? parsed.layoutMode : "focus",
+    focusPanelId,
+    visiblePanelIds: nextVisiblePanelIds,
+    panelGroups,
+    collapsedSections: (Array.isArray(parsed.collapsedSections) ? parsed.collapsedSections : []).filter((section) =>
+      ["recent-runs", "source-preview"].includes(section)
+    ),
+    recommendedActions: Array.isArray(parsed.recommendedActions)
+      ? parsed.recommendedActions.map((entry) => String(entry)).filter(Boolean).slice(0, 4)
+      : [],
+    rationale: String(parsed.rationale ?? "Workspace remains in its default focused layout."),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function buildFallbackWorkspacePlan(domain, context, recentRuns = [], preferredPanelId = null) {
+  const backlog = getQuerySample(context, "pendingJobsByPartition");
+  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
+  const fabricRisk = getQuerySample(context, "ibErrorScoreByNode");
+  const recommendedActions = [];
+  let focusPanelId = preferredPanelId && panelIds(domain).includes(preferredPanelId) ? preferredPanelId : domain.panels[0]?.id ?? "";
+  let rationale = "Workspace remains centered on the default domain priorities.";
+
+  if (!preferredPanelId) {
+    const topBacklog = backlog
+      .map((entry) => Number(entry.value))
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => right - left)[0] ?? 0;
+    const topGpuTemp = hotGpus
+      .map((entry) => Number(entry.value))
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => right - left)[0] ?? 0;
+    const topFabricSignal = fabricRisk
+      .map((entry) => Number(entry.value))
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => right - left)[0] ?? 0;
+
+    if (topBacklog >= 20 && panelIds(domain).includes("scheduler-pressure")) {
+      focusPanelId = "scheduler-pressure";
+      rationale = "Scheduler pressure has been promoted because queue backlog is concentrated in a few partitions.";
+      recommendedActions.push("Inspect partition backlog and saturation before drilling into host-level symptoms.");
+    } else if (topGpuTemp >= 78 && panelIds(domain).includes("gpu-hotspots")) {
+      focusPanelId = "gpu-hotspots";
+      rationale = "GPU hotspots have been promoted because the current window shows elevated thermal outliers.";
+      recommendedActions.push("Inspect the hottest accelerators and correlate them with job placement.");
+    } else if (topFabricSignal > 0 && panelIds(domain).includes("fabric-storage")) {
+      focusPanelId = "fabric-storage";
+      rationale = "Fabric and storage signals were promoted because non-zero infrastructure error counters are present.";
+      recommendedActions.push("Check the highest-error nodes before assuming the issue is only scheduler-related.");
+    } else if (panelIds(domain).includes("fleet-health")) {
+      focusPanelId = "fleet-health";
+      rationale = "Fleet Health stays in focus because it best summarizes the current operating picture.";
+    }
+  }
+
+  if (!recommendedActions.length && recentRuns.some((run) => run.status === "failed")) {
+    recommendedActions.push("Re-run failed panels after reviewing datasource readiness and widget generation state.");
+  }
+
+  const preferredOrder = [
+    focusPanelId,
+    "fleet-health",
+    "scheduler-pressure",
+    "gpu-hotspots",
+    "fabric-storage",
+    "job-correlation",
+    "operator-brief"
+  ].filter((panelId, index, values) => panelId && values.indexOf(panelId) === index && panelIds(domain).includes(panelId));
+  const visiblePanelIds = preferredOrder.concat(panelIds(domain).filter((panelId) => !preferredOrder.includes(panelId)));
+
+  return normalizeWorkspacePlan(
+    domain,
+    {
+      domainId: domain.id,
+      layoutMode: "focus",
+      focusPanelId,
+      visiblePanelIds,
+      panelGroups: [
+        {
+          id: "primary",
+          title: "Priority",
+          panelIds: visiblePanelIds.slice(0, 3)
+        },
+        {
+          id: "secondary",
+          title: "Supporting",
+          panelIds: visiblePanelIds.slice(3)
+        }
+      ],
+      collapsedSections: ["recent-runs"],
+      recommendedActions,
+      rationale
+    },
+    preferredPanelId
+  );
+}
+
 function normalizeReport(parsed, panel) {
   const chart = parsed.chart ?? {};
   return {
@@ -203,12 +392,116 @@ export class AgentRuntime {
     return domain;
   }
 
-  async runAnalysis({ domainId, panelId }) {
-    const [appConfig, domain, dataSources, sessions] = await Promise.all([
+  async planWorkspace({ domainId, preferredPanelId = null, reason = "refresh", contextOverride = null }) {
+    const [appConfig, domain, dataSources, runs] = await Promise.all([
       this.configStore.getAppConfig(),
       this.configStore.getDomain(domainId),
       this.configStore.getDataSources(),
-      this.configStore.getSessions()
+      this.configStore.listRuns()
+    ]);
+
+    if (!domain) {
+      throw new Error(`Unknown domain: ${domainId}`);
+    }
+
+    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources));
+    const recentRuns = runs.filter((run) => run.domainId === domainId).slice(0, 8);
+
+    if (!this.openai) {
+      const workspacePlan = buildFallbackWorkspacePlan(domain, context, recentRuns, preferredPanelId);
+      await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
+      this.eventBus.emit("workspace.update", workspacePlan);
+      return workspacePlan;
+    }
+
+    const response = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.2",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "You plan bounded workspace adaptations for an analytical web app. Keep the host shell stable. Only reprioritize panels, order, grouping, and collapsed secondary sections. Return strict JSON only."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nRecent runs:\n${JSON.stringify(recentRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "workspace_plan",
+          schema: workspacePlanSchema,
+          strict: true
+        }
+      }
+    });
+
+    const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
+    const workspacePlan = normalizeWorkspacePlan(domain, parsed, preferredPanelId);
+    await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
+    this.eventBus.emit("workspace.update", workspacePlan);
+    return workspacePlan;
+  }
+
+  buildAnalysisTask(panel, workspacePlan) {
+    const focusHint = workspacePlan?.focusPanelId === panel.id
+      ? "This panel is currently the primary focus of the workspace plan."
+      : "This panel is currently supporting the primary workspace focus.";
+    const rationaleHint = workspacePlan?.rationale ? `Workspace rationale: ${workspacePlan.rationale}` : "";
+    const actionsHint = workspacePlan?.recommendedActions?.length
+      ? `Recommended operator actions to consider: ${workspacePlan.recommendedActions.join(" ")}`
+      : "";
+
+    return [panel.analysisPrompt, focusHint, rationaleHint, actionsHint].filter(Boolean).join("\n\n");
+  }
+
+  async ensurePanelRun({ domainId, panelId, force = false, freshnessMs = 0, contextOverride = null, workspacePlanOverride = null, trigger = "manual" }) {
+    const runs = await this.configStore.listRuns();
+    const relevantRuns = runs.filter((run) => run.domainId === domainId && run.panelId === panelId);
+    const latestRun = relevantRuns[0] ?? null;
+
+    if (latestRun?.status === "in_progress") {
+      const syncedRun = await this.syncRun(latestRun.id);
+      if (syncedRun?.status === "in_progress") {
+        return syncedRun;
+      }
+      if (!force && syncedRun?.status === "completed" && Date.now() - new Date(syncedRun.updatedAt).getTime() <= freshnessMs) {
+        return syncedRun;
+      }
+    }
+
+    if (!force && latestRun?.status === "completed" && Date.now() - new Date(latestRun.updatedAt).getTime() <= freshnessMs) {
+      return latestRun;
+    }
+
+    return this.runAnalysis({ domainId, panelId, contextOverride, workspacePlanOverride, trigger });
+  }
+
+  async runAnalysis({ domainId, panelId, contextOverride = null, workspacePlanOverride = null, trigger = "manual" }) {
+    const [appConfig, domain, dataSources, sessions, workspacePlan] = await Promise.all([
+      this.configStore.getAppConfig(),
+      this.configStore.getDomain(domainId),
+      this.configStore.getDataSources(),
+      this.configStore.getSessions(),
+      workspacePlanOverride
+        ? Promise.resolve(workspacePlanOverride)
+        : this.planWorkspace({ domainId, preferredPanelId: panelId, reason: "run-request" }).catch(() =>
+            this.configStore.getWorkspacePlan(domainId)
+          )
     ]);
 
     if (!domain) {
@@ -221,7 +514,7 @@ export class AgentRuntime {
       throw new Error(`Unknown panel: ${panelId}`);
     }
 
-    const context = await gatherDomainContext(domain, dataSources);
+    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources));
     const run = {
       id: crypto.randomUUID(),
       domainId,
@@ -233,6 +526,7 @@ export class AgentRuntime {
       context,
       report: this.openai ? null : buildFallbackReport(panel, context),
       provider: this.openai ? "openai-responses" : "local-fallback",
+      trigger,
       remoteResponseId: null,
       widgetId: null,
       widgetUrl: null
@@ -270,7 +564,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${panel.analysisPrompt}`
+              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nWorkspace plan:\n${JSON.stringify(workspacePlan, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}`
             }
           ]
         }
@@ -376,6 +670,7 @@ export class AgentRuntime {
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
     void this.generateWidgetForRun(run.id, domain, panel);
+    void this.planWorkspace({ domainId: run.domainId, preferredPanelId: panel.id, reason: "analysis-complete" }).catch(() => {});
   }
 
   async attachWidget(run, domain, panel) {

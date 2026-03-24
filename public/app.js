@@ -5,6 +5,8 @@ const state = {
   sourcePreviews: [],
   runs: [],
   widgets: [],
+  workspacePlans: {},
+  domainSnapshots: {},
   selectedDomainId: null,
   activePanelId: null,
   isStudioOpen: false,
@@ -17,11 +19,13 @@ const elements = {
   domainName: document.querySelector("#domain-name"),
   domainDescription: document.querySelector("#domain-description"),
   domainChip: document.querySelector("#domain-chip"),
+  workspaceNote: document.querySelector("#workspace-note"),
+  workspaceActions: document.querySelector("#workspace-actions"),
   panelRail: document.querySelector("#panel-rail"),
   panelStage: document.querySelector("#panel-stage"),
   runList: document.querySelector("#run-list"),
   sourcePreviewList: document.querySelector("#source-preview-list"),
-  sourcePreviewListMobile: document.querySelector("#source-preview-list-mobile"),
+  sourcePreviewSection: document.querySelector("#source-preview-section"),
   domainForm: document.querySelector("#domain-form"),
   domainPrompt: document.querySelector("#domain-prompt"),
   sourceForm: document.querySelector("#source-form"),
@@ -92,6 +96,10 @@ function failedPanelRun(domainRuns, panelId) {
   return panelRuns(domainRuns, panelId).find((run) => run.status === "failed") ?? null;
 }
 
+function latestWidgetRun(domainRuns, panelId) {
+  return panelRuns(domainRuns, panelId).find((run) => run.widgetId) ?? null;
+}
+
 function visibleRunsForDomain(domainId) {
   return domainId ? state.runs.filter((run) => run.domainId === domainId) : state.runs;
 }
@@ -123,7 +131,7 @@ function dedupeRunsForDisplay(runs) {
 function setSelectedDomain(domainId) {
   state.selectedDomainId = domainId;
   const domain = currentDomain();
-  state.activePanelId = domain?.panels[0]?.id ?? null;
+  state.activePanelId = state.workspacePlans[domainId]?.focusPanelId ?? state.domainSnapshots[domainId]?.workspacePlan?.focusPanelId ?? domain?.panels[0]?.id ?? null;
   renderDomains();
   renderCurrentDomain();
 }
@@ -151,30 +159,24 @@ function renderDomains() {
 }
 
 function renderSourcePreviews() {
-  const targets = [elements.sourcePreviewList, elements.sourcePreviewListMobile].filter(Boolean);
-
-  for (const target of targets) {
-    target.innerHTML = "";
-  }
+  elements.sourcePreviewList.innerHTML = "";
 
   for (const preview of state.sourcePreviews) {
-    for (const target of targets) {
-      const card = document.createElement("article");
-      card.className = "source-card";
-      const className = preview.status === "ready" ? "status-ready" : "status-warning";
-      card.innerHTML = `
-        <div class="run-meta">
-          <div>
-            <p class="section-label">${preview.sourceType}</p>
-            <h3>${preview.sourceName}</h3>
-          </div>
-          <span class="${className}">${preview.status}</span>
+    const card = document.createElement("article");
+    card.className = "source-card";
+    const className = preview.status === "ready" ? "status-ready" : "status-warning";
+    card.innerHTML = `
+      <div class="run-meta">
+        <div>
+          <p class="section-label">${preview.sourceType}</p>
+          <h3>${preview.sourceName}</h3>
         </div>
-        <p class="source-description">${preview.detail.message || `Preview rows: ${preview.detail.rowCount ?? preview.detail.resultCount ?? 0}`}</p>
-        <code>${preview.sourceId}</code>
-      `;
-      target.append(card);
-    }
+        <span class="${className}">${preview.status}</span>
+      </div>
+      <p class="source-description">${preview.detail.message || `Preview rows: ${preview.detail.rowCount ?? preview.detail.resultCount ?? 0}`}</p>
+      <code>${preview.sourceId}</code>
+    `;
+    elements.sourcePreviewList.append(card);
   }
 }
 
@@ -200,6 +202,47 @@ function renderStudio() {
 function setStudioOpen(nextValue) {
   state.isStudioOpen = Boolean(nextValue);
   renderStudio();
+}
+
+function currentWorkspacePlan() {
+  const domain = currentDomain();
+  return domain ? state.workspacePlans[domain.id] ?? null : null;
+}
+
+function orderedPanelsForDomain(domain) {
+  const workspacePlan = state.workspacePlans[domain.id] ?? null;
+  const visiblePanelIds = workspacePlan?.visiblePanelIds?.filter((panelId) => domain.panels.some((panel) => panel.id === panelId));
+  const orderedIds = visiblePanelIds?.length ? visiblePanelIds : domain.panels.map((panel) => panel.id);
+  return orderedIds
+    .map((panelId) => domain.panels.find((panel) => panel.id === panelId))
+    .filter(Boolean);
+}
+
+function renderWorkspacePlan(workspacePlan) {
+  elements.workspaceNote.textContent = workspacePlan?.rationale ?? "Workspace is following the default domain layout.";
+  elements.workspaceActions.innerHTML = "";
+
+  for (const action of workspacePlan?.recommendedActions ?? []) {
+    const chip = document.createElement("span");
+    chip.className = "workspace-action-chip";
+    chip.textContent = action;
+    elements.workspaceActions.append(chip);
+  }
+
+  if (!workspacePlan?.recommendedActions?.length) {
+    const chip = document.createElement("span");
+    chip.className = "workspace-action-chip muted";
+    chip.textContent = "No immediate adaptation actions recommended.";
+    elements.workspaceActions.append(chip);
+  }
+
+  if (elements.sourcePreviewSection) {
+    elements.sourcePreviewSection.open = !(workspacePlan?.collapsedSections ?? []).includes("source-preview");
+  }
+  const recentRunsSection = document.querySelector("#recent-runs-section");
+  if (recentRunsSection) {
+    recentRunsSection.open = !(workspacePlan?.collapsedSections ?? []).includes("recent-runs");
+  }
 }
 
 function escapeHtml(value) {
@@ -403,14 +446,16 @@ function widgetPayload(run, domain, panel) {
   };
 }
 
-function renderVisualization(run, domain, panel) {
+function renderVisualization(run, domain, panel, widgetRun = null) {
   const nativeChart = `
     <div class="native-chart-shell">
       ${run?.report?.chart ? renderChart(run.report.chart) : renderPlaceholderChart(panel.chartPreference)}
     </div>
   `;
 
-  if (!run?.widgetId) {
+  const widgetSourceRun = widgetRun?.widgetId ? widgetRun : run?.widgetId ? run : null;
+
+  if (!widgetSourceRun?.widgetId) {
     return `<div class="chart-stack">${nativeChart}</div>`;
   }
 
@@ -422,13 +467,13 @@ function renderVisualization(run, domain, panel) {
         <iframe
           class="widget-frame"
           title="${escapeHtml(panel.title)}"
-          src="/generated/widgets/${encodeURIComponent(run.widgetId)}"
+          src="/generated/widgets/${encodeURIComponent(widgetSourceRun.widgetId)}"
           sandbox="allow-scripts"
-          data-widget-id="${escapeHtml(run.widgetId)}"
-          data-run-id="${escapeHtml(run.id)}"
+          data-widget-id="${escapeHtml(widgetSourceRun.widgetId)}"
+          data-run-id="${escapeHtml(widgetSourceRun.id)}"
           data-domain-id="${escapeHtml(domain.id)}"
           data-panel-id="${escapeHtml(panel.id)}"
-          data-session-id="${escapeHtml(`${run.widgetId}:${run.id}`)}"
+          data-session-id="${escapeHtml(`${widgetSourceRun.widgetId}:${widgetSourceRun.id}`)}"
         ></iframe>
         <p class="widget-note">If the generated widget is sparse, the native chart above is the guaranteed fallback visualization.</p>
       </div>
@@ -484,13 +529,20 @@ function renderCurrentDomain() {
     elements.domainName.textContent = "Select a domain";
     elements.domainDescription.textContent = "Upload or generate a domain description to project a specialized analytics UI.";
     elements.domainChip.textContent = "No domain";
+    elements.workspaceNote.textContent = "";
+    elements.workspaceActions.innerHTML = "";
     elements.panelRail.innerHTML = "";
     elements.panelStage.innerHTML = `<p class="hint">No domain selected.</p>`;
     return;
   }
 
-  if (!domain.panels.some((panel) => panel.id === state.activePanelId)) {
-    state.activePanelId = domain.panels[0]?.id ?? null;
+  const workspacePlan = currentWorkspacePlan();
+  const orderedPanels = orderedPanelsForDomain(domain);
+
+  if (!orderedPanels.some((panel) => panel.id === state.activePanelId)) {
+    state.activePanelId = workspacePlan?.focusPanelId && orderedPanels.some((panel) => panel.id === workspacePlan.focusPanelId)
+      ? workspacePlan.focusPanelId
+      : orderedPanels[0]?.id ?? null;
   }
 
   elements.domainName.textContent = domain.name;
@@ -498,10 +550,22 @@ function renderCurrentDomain() {
   elements.domainChip.textContent = `${domain.panels.length} panels`;
   elements.panelRail.innerHTML = "";
   elements.panelStage.innerHTML = "";
+  renderWorkspacePlan(workspacePlan);
 
   const domainRuns = visibleRunsForDomain(domain.id);
+  const panelGroups = workspacePlan?.panelGroups?.filter((group) => group.panelIds.some((panelId) => orderedPanels.some((panel) => panel.id === panelId))) ?? [];
+  const renderedGroupIds = new Set();
 
-  for (const panel of domain.panels) {
+  for (const panel of orderedPanels) {
+    const matchingGroup = panelGroups.find((group) => group.panelIds.includes(panel.id));
+    if (matchingGroup && !renderedGroupIds.has(matchingGroup.id)) {
+      const label = document.createElement("div");
+      label.className = "panel-group-label";
+      label.textContent = matchingGroup.title;
+      elements.panelRail.append(label);
+      renderedGroupIds.add(matchingGroup.id);
+    }
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = `panel-rail-button ${panel.id === state.activePanelId ? "active" : ""}`;
@@ -519,7 +583,7 @@ function renderCurrentDomain() {
     elements.panelRail.append(button);
   }
 
-  const panel = domain.panels.find((entry) => entry.id === state.activePanelId) ?? domain.panels[0];
+  const panel = orderedPanels.find((entry) => entry.id === state.activePanelId) ?? orderedPanels[0];
 
   if (!panel) {
     elements.panelStage.innerHTML = `<p class="hint">No panels are defined for this domain.</p>`;
@@ -533,14 +597,16 @@ function renderCurrentDomain() {
   node.querySelector(".panel-title").textContent = panel.title;
   node.querySelector(".panel-summary").textContent = panel.summary;
   const latestRun = latestRenderableRun(domainRuns, panel.id);
+  const widgetRun = latestWidgetRun(domainRuns, panel.id);
   const activeRun = activePanelRun(domainRuns, panel.id);
   const staleRun = stalePanelRun(domainRuns, panel.id);
   const failedRun = failedPanelRun(domainRuns, panel.id);
   const runButton = node.querySelector(".run-button");
-  node.querySelector(".chart-title").textContent = latestRun?.widgetId
+  const forceRunButton = node.querySelector(".force-run-button");
+  node.querySelector(".chart-title").textContent = (latestRun?.widgetId || widgetRun?.widgetId)
     ? "Generated Browser Visualization"
     : latestRun?.report?.chart?.title || "Awaiting chart output";
-  node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel);
+  node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel, widgetRun);
   node.querySelector(".report-shell").innerHTML = latestRun?.report
     ? `
       ${latestRun.report.narrative.map((entry) => `<p>${escapeHtml(entry)}</p>`).join("")}
@@ -561,7 +627,14 @@ function renderCurrentDomain() {
     : activeRun?.status === "in_progress"
       ? "Running..."
       : "Run Analysis";
-  runButton.addEventListener("click", () => runAnalysis(domain.id, panel.id));
+  forceRunButton.disabled = transientState?.status === "starting" || activeRun?.status === "in_progress";
+  forceRunButton.textContent = transientState?.status === "starting"
+    ? "Starting..."
+    : activeRun?.status === "in_progress"
+      ? "Running..."
+      : "Force Re-run";
+  runButton.addEventListener("click", () => runAnalysis(domain.id, panel.id, false));
+  forceRunButton.addEventListener("click", () => runAnalysis(domain.id, panel.id, true));
   elements.panelStage.append(node);
 
   bindWidgetFrames();
@@ -607,6 +680,15 @@ async function refresh() {
   state.sourcePreviews = payload.sourcePreviews;
   state.runs = payload.runs;
   state.widgets = payload.widgets;
+  state.domainSnapshots = payload.domainSnapshots ?? {};
+  state.workspacePlans = {
+    ...(payload.workspacePlans ?? {})
+  };
+  for (const snapshot of Object.values(state.domainSnapshots)) {
+    if (snapshot?.workspacePlan) {
+      state.workspacePlans[snapshot.domainId] = snapshot.workspacePlan;
+    }
+  }
   const preferredDomainId = payload.appConfig.app?.defaultDomainId ?? null;
 
   if (!state.selectedDomainId && preferredDomainId && state.domains.some((domain) => domain.id === preferredDomainId)) {
@@ -620,8 +702,9 @@ async function refresh() {
   }
 
   const selectedDomain = currentDomain();
+  const workspacePlan = selectedDomain ? state.workspacePlans[selectedDomain.id] ?? null : null;
   if (!selectedDomain?.panels.some((panel) => panel.id === state.activePanelId)) {
-    state.activePanelId = selectedDomain?.panels[0]?.id ?? null;
+    state.activePanelId = workspacePlan?.focusPanelId ?? selectedDomain?.panels[0]?.id ?? null;
   }
 
   elements.appName.textContent = payload.appConfig.app?.name || "Morphy";
@@ -677,14 +760,14 @@ async function createDataSource(event) {
   setStudioOpen(false);
 }
 
-async function runAnalysis(domainId, panelId) {
+async function runAnalysis(domainId, panelId, force = false) {
   const panelKey = `${domainId}:${panelId}`;
-  state.panelRunState[panelKey] = { status: "starting" };
+  state.panelRunState[panelKey] = { status: "starting", force };
   renderCurrentDomain();
 
   const run = await request("/api/analysis/run", {
     method: "POST",
-    body: JSON.stringify({ domainId, panelId })
+    body: JSON.stringify({ domainId, panelId, force })
   });
   delete state.panelRunState[panelKey];
   state.runs = [run, ...state.runs.filter((entry) => entry.id !== run.id)].sort(
@@ -738,6 +821,54 @@ async function reconcileStaleRuns() {
   renderRuns();
 }
 
+async function ensureWorkspacePlan() {
+  const domain = currentDomain();
+
+  if (!domain) {
+    return;
+  }
+
+  const workspacePlan = state.workspacePlans[domain.id] ?? null;
+  const planAgeMs = workspacePlan?.updatedAt ? Date.now() - new Date(workspacePlan.updatedAt).getTime() : Infinity;
+
+  if (workspacePlan && planAgeMs < 5 * 60 * 1000) {
+    return;
+  }
+
+  const nextPlan = await request("/api/workspace/plan", {
+    method: "POST",
+    body: JSON.stringify({
+      domainId: domain.id,
+      preferredPanelId: state.activePanelId,
+      reason: workspacePlan ? "stale-refresh" : "bootstrap"
+    })
+  });
+
+  state.workspacePlans[domain.id] = nextPlan;
+  if (!state.activePanelId || !nextPlan.visiblePanelIds?.includes(state.activePanelId)) {
+    state.activePanelId = nextPlan.focusPanelId;
+  }
+  renderCurrentDomain();
+}
+
+async function requestDomainRefresh(force = false) {
+  const domain = currentDomain();
+
+  if (!domain) {
+    await refresh();
+    return;
+  }
+
+  await request("/api/refresh/domain", {
+    method: "POST",
+    body: JSON.stringify({
+      domainId: domain.id,
+      force
+    })
+  });
+  await refresh();
+}
+
 function connectEvents() {
   const events = new EventSource("/api/events");
   events.addEventListener("run.update", (event) => {
@@ -747,6 +878,35 @@ function connectEvents() {
     );
     renderCurrentDomain();
     renderRuns();
+  });
+  events.addEventListener("workspace.update", (event) => {
+    const workspacePlan = JSON.parse(event.data);
+    state.workspacePlans[workspacePlan.domainId] = workspacePlan;
+
+    if (workspacePlan.domainId === state.selectedDomainId && (!state.activePanelId || !workspacePlan.visiblePanelIds?.includes(state.activePanelId))) {
+      state.activePanelId = workspacePlan.focusPanelId;
+    }
+
+    renderCurrentDomain();
+  });
+  events.addEventListener("domain.refresh", (event) => {
+    const snapshot = JSON.parse(event.data);
+    state.domainSnapshots[snapshot.domainId] = snapshot;
+    if (snapshot.workspacePlan) {
+      state.workspacePlans[snapshot.domainId] = snapshot.workspacePlan;
+    }
+    if (state.selectedDomainId === snapshot.domainId) {
+      if (!state.activePanelId || !snapshot.workspacePlan?.visiblePanelIds?.includes(state.activePanelId)) {
+        state.activePanelId = snapshot.workspacePlan?.focusPanelId ?? state.activePanelId;
+      }
+      if (snapshot.context?.previews?.length) {
+        state.sourcePreviews = state.sourcePreviews
+          .filter((preview) => !snapshot.context.previews.some((nextPreview) => nextPreview.sourceId === preview.sourceId))
+          .concat(snapshot.context.previews);
+      }
+    }
+    renderSourcePreviews();
+    renderCurrentDomain();
   });
 }
 
@@ -797,7 +957,7 @@ elements.sourceForm.addEventListener("submit", (event) => {
 });
 
 elements.refreshButton.addEventListener("click", () => {
-  refresh().catch((error) => window.alert(error.message));
+  requestDomainRefresh(false).catch((error) => window.alert(error.message));
 });
 
 elements.studioToggleButton?.addEventListener("click", () => {

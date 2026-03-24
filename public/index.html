@@ -37,7 +37,7 @@
         </section>
 
         <section class="panel chrome">
-          <details class="sidebar-section">
+          <details id="source-preview-section" class="sidebar-section">
             <summary class="sidebar-toggle">
               <span>
                 <p class="section-label">Data Sources</p>
@@ -73,6 +73,19 @@
                 </div>
                 <p class="hint">Keep one panel in focus and pull in the rest only when needed.</p>
               </div>
+              <details id="workspace-debug-section" class="workspace-plan-shell">
+                <summary class="section-toggle workspace-plan-toggle">
+                  <div>
+                    <p class="section-label">Workspace Plan</p>
+                    <h3>Planner Rationale</h3>
+                  </div>
+                  <p class="hint">Debug view for bounded UI adaptation.</p>
+                </summary>
+                <div class="section-body">
+                  <p id="workspace-note" class="workspace-note hint"></p>
+                  <div id="workspace-actions" class="workspace-actions"></div>
+                </div>
+              </details>
               <div class="workspace-focus">
                 <nav id="panel-rail" class="panel-rail" aria-label="Panel selector"></nav>
                 <div id="panel-stage" class="panel-stage"></div>
@@ -151,7 +164,10 @@
             <p class="section-label panel-kicker"></p>
             <h3 class="panel-title"></h3>
           </div>
-          <button class="ghost-button run-button" type="button">Run Analysis</button>
+          <div class="panel-actions">
+            <button class="ghost-button force-run-button" type="button">Force Re-run</button>
+            <button class="ghost-button run-button" type="button">Run Analysis</button>
+          </div>
         </div>
         <p class="panel-summary"></p>
         <div class="chart-shell">

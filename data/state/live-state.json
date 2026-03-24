@@ -1,0 +1,1139 @@
+{
+  "updatedAt": "2026-03-24T22:08:59.540Z",
+  "sourcePreviews": [
+    {
+      "sourceId": "cluster-inventory",
+      "sourceType": "json-file",
+      "sourceName": "Cluster Inventory Snapshot",
+      "status": "ready",
+      "detail": {
+        "kind": "rows",
+        "rowCount": 4,
+        "metrics": {
+          "cpu_load": {
+            "min": 0.21,
+            "max": 0.92,
+            "average": 0.575
+          },
+          "memory_pressure": {
+            "min": 0.32,
+            "max": 0.88,
+            "average": 0.625
+          },
+          "disk_pressure": {
+            "min": 0.1,
+            "max": 0.73,
+            "average": 0.333
+          }
+        },
+        "sample": [
+          {
+            "hostname": "chi-gpu-001",
+            "role": "gpu-node",
+            "cluster": "training-a",
+            "rack": "r12",
+            "status": "degraded",
+            "cpu_load": 0.92,
+            "memory_pressure": 0.88,
+            "disk_pressure": 0.31
+          },
+          {
+            "hostname": "chi-gpu-002",
+            "role": "gpu-node",
+            "cluster": "training-a",
+            "rack": "r12",
+            "status": "healthy",
+            "cpu_load": 0.63,
+            "memory_pressure": 0.51,
+            "disk_pressure": 0.19
+          },
+          {
+            "hostname": "chi-login-001",
+            "role": "login",
+            "cluster": "training-a",
+            "rack": "r03",
+            "status": "healthy",
+            "cpu_load": 0.21,
+            "memory_pressure": 0.32,
+            "disk_pressure": 0.1
+          },
+          {
+            "hostname": "dal-storage-017",
+            "role": "storage",
+            "cluster": "analytics-b",
+            "rack": "r44",
+            "status": "warning",
+            "cpu_load": 0.54,
+            "memory_pressure": 0.79,
+            "disk_pressure": 0.73
+          }
+        ]
+      }
+    },
+    {
+      "sourceId": "victoria-cluster",
+      "sourceType": "victoria-metrics",
+      "sourceName": "VictoriaMetrics HPCFund Cluster",
+      "status": "ready",
+      "detail": {
+        "queryWindow": {
+          "evaluationTime": "2026-03-24T23:59:59Z",
+          "start": "2026-03-01T00:00:00Z",
+          "end": "2026-03-24T23:59:59Z"
+        },
+        "queryResults": [
+          {
+            "queryName": "instrumentedHostCount",
+            "resultType": "vector",
+            "resultCount": 1,
+            "sample": [
+              {
+                "metric": {},
+                "value": "72"
+              }
+            ]
+          },
+          {
+            "queryName": "pendingJobsByPartition",
+            "resultType": "vector",
+            "resultCount": 8,
+            "sample": [
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3001x"
+                },
+                "value": "36"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi2104x"
+                },
+                "value": "26"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3008x"
+                },
+                "value": "2"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3258x"
+                },
+                "value": "2"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi2508x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi2101x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3508x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "__name__": "slurm_partition_jobs_pending",
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "devel"
+                },
+                "value": "1"
+              }
+            ]
+          },
+          {
+            "queryName": "partitionCpuSaturation",
+            "resultType": "vector",
+            "resultCount": 9,
+            "sample": [
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3008x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3258x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3508x"
+                },
+                "value": "1"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi3001x"
+                },
+                "value": "0.75"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi2508x"
+                },
+                "value": "0.7"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "staff"
+                },
+                "value": "0.6558823529411765"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "mi2104x"
+                },
+                "value": "0.6190476190476191"
+              },
+              {
+                "metric": {
+                  "instance": "localhost:8080",
+                  "job": "slurm",
+                  "monitor": "example",
+                  "partition": "devel"
+                },
+                "value": "0.25"
+              }
+            ]
+          },
+          {
+            "queryName": "hotGpusByTemperature",
+            "resultType": "vector",
+            "resultCount": 10,
+            "sample": [
+              {
+                "metric": {
+                  "card": "0",
+                  "instance": "k002-004-v5:8000"
+                },
+                "value": "82"
+              },
+              {
+                "metric": {
+                  "card": "0",
+                  "instance": "k002-004-v7:8000"
+                },
+                "value": "81"
+              },
+              {
+                "metric": {
+                  "card": "0",
+                  "instance": "k002-004-v1:8000"
+                },
+                "value": "79"
+              },
+              {
+                "metric": {
+                  "card": "0",
+                  "instance": "k002-004-v8:8000"
+                },
+                "value": "76"
+              },
+              {
+                "metric": {
+                  "card": "0",
+                  "instance": "k002-004-v6:8000"
+                },
+                "value": "75"
+              },
+              {
+                "metric": {
+                  "card": "4",
+                  "instance": "k002-003:8000"
+                },
+                "value": "72"
+              },
+              {
+                "metric": {
+                  "card": "2",
+                  "instance": "k002-003:8000"
+                },
+                "value": "71"
+              },
+              {
+                "metric": {
+                  "card": "6",
+                  "instance": "k002-003:8000"
+                },
+                "value": "69"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "sourceId": "warehouse-kpis",
+      "sourceType": "relational",
+      "sourceName": "Warehouse KPI Feed",
+      "status": "ready",
+      "detail": {
+        "message": "Using configured sample rows. Swap in a live adapter for production.",
+        "kind": "rows",
+        "rowCount": 2,
+        "metrics": {
+          "active_orders": {
+            "min": 981,
+            "max": 1412,
+            "average": 1196.5
+          },
+          "sla_risk_orders": {
+            "min": 37,
+            "max": 112,
+            "average": 74.5
+          },
+          "pick_rate_per_hour": {
+            "min": 183,
+            "max": 205,
+            "average": 194
+          }
+        },
+        "sample": [
+          {
+            "site": "CHI-1",
+            "active_orders": 1412,
+            "sla_risk_orders": 112,
+            "pick_rate_per_hour": 183
+          },
+          {
+            "site": "DAL-2",
+            "active_orders": 981,
+            "sla_risk_orders": 37,
+            "pick_rate_per_hour": 205
+          }
+        ]
+      }
+    }
+  ],
+  "domainSnapshots": {
+    "hpcfund-cluster-observability": {
+      "domainId": "hpcfund-cluster-observability",
+      "domainName": "HPCFund Cluster Observability",
+      "updatedAt": "2026-03-24T22:08:59.540Z",
+      "reason": "tick",
+      "context": {
+        "domainId": "hpcfund-cluster-observability",
+        "domainName": "HPCFund Cluster Observability",
+        "previewCount": 1,
+        "previews": [
+          {
+            "sourceId": "victoria-cluster",
+            "sourceType": "victoria-metrics",
+            "sourceName": "VictoriaMetrics HPCFund Cluster",
+            "status": "ready",
+            "detail": {
+              "queryWindow": {
+                "evaluationTime": "2026-03-24T23:59:59Z",
+                "start": "2026-03-01T00:00:00Z",
+                "end": "2026-03-24T23:59:59Z"
+              },
+              "queryResults": [
+                {
+                  "queryName": "instrumentedHostCount",
+                  "resultType": "vector",
+                  "resultCount": 1,
+                  "sample": [
+                    {
+                      "metric": {},
+                      "value": "72"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "pendingJobsByPartition",
+                  "resultType": "vector",
+                  "resultCount": 8,
+                  "sample": [
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3001x"
+                      },
+                      "value": "36"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2104x"
+                      },
+                      "value": "26"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3008x"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3258x"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2101x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "devel"
+                      },
+                      "value": "1"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "partitionCpuSaturation",
+                  "resultType": "vector",
+                  "resultCount": 9,
+                  "sample": [
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3008x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3258x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3001x"
+                      },
+                      "value": "0.75"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2508x"
+                      },
+                      "value": "0.7"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "staff"
+                      },
+                      "value": "0.6558823529411765"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2104x"
+                      },
+                      "value": "0.6190476190476191"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "devel"
+                      },
+                      "value": "0.25"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "hotGpusByTemperature",
+                  "resultType": "vector",
+                  "resultCount": 10,
+                  "sample": [
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v5:8000"
+                      },
+                      "value": "82"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v7:8000"
+                      },
+                      "value": "81"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v1:8000"
+                      },
+                      "value": "79"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v8:8000"
+                      },
+                      "value": "76"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v6:8000"
+                      },
+                      "value": "75"
+                    },
+                    {
+                      "metric": {
+                        "card": "4",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "72"
+                    },
+                    {
+                      "metric": {
+                        "card": "2",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "71"
+                    },
+                    {
+                      "metric": {
+                        "card": "6",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "69"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "workspacePlan": {
+        "domainId": "hpcfund-cluster-observability",
+        "layoutMode": "split",
+        "focusPanelId": "operator-brief",
+        "visiblePanelIds": [
+          "operator-brief",
+          "scheduler-pressure",
+          "gpu-hotspots",
+          "job-correlation",
+          "fleet-health",
+          "fabric-storage"
+        ],
+        "panelGroups": [
+          {
+            "id": "handoff",
+            "title": "Shift Handoff (Primary)",
+            "panelIds": [
+              "operator-brief"
+            ]
+          },
+          {
+            "id": "demand-thermal",
+            "title": "Demand + Thermal Drivers (Supporting)",
+            "panelIds": [
+              "scheduler-pressure",
+              "gpu-hotspots",
+              "job-correlation"
+            ]
+          },
+          {
+            "id": "infra-risk",
+            "title": "Infrastructure Risk Deep-Dive (As Available)",
+            "panelIds": [
+              "fleet-health",
+              "fabric-storage"
+            ]
+          }
+        ],
+        "collapsedSections": [
+          "recent-runs",
+          "source-preview"
+        ],
+        "recommendedActions": [
+          "Keep Operator Brief as the working panel for handoff; use Scheduler Pressure + GPU Hotspots to validate the two dominant narratives (mi3001x/mi2104x backlog; k002-004-v* thermal hotspots).",
+          "Re-run Job Correlation with expanded Slurm job->node/partition/user metadata (job IDs, user/account, nodelist, partition, GRES/GPU request) to close the attribution gap called out in the completed report.",
+          "If InfiniBand/SMART series exist in VictoriaMetrics but were omitted from the preview, re-run Fabric And Storage with explicit IB error counters + SMART attributes; otherwise treat it as informational/low-confidence."
+        ],
+        "rationale": "Planning reason is analysis-complete with preferred panel = operator-brief, so the layout prioritizes the completed handoff summary while keeping the most relevant supporting analyses (scheduler pressure, GPU thermals, and correlation) immediately adjacent. Lower-signal panels (fleet/fabric) remain accessible but grouped as deep-dives given the current evidence gaps. Collapsing Recent Runs and Source Preview reduces noise without changing the host shell or removing functionality.",
+        "updatedAt": "2026-03-24T22:06:31.304Z"
+      },
+      "panelStatus": {
+        "fleet-health": {
+          "runId": "e1805fd6-324e-4f73-af16-5039065106fc",
+          "status": "completed",
+          "updatedAt": "2026-03-24T20:13:16.811Z",
+          "hasReport": true,
+          "widgetId": "085b7fc5-eaa2-4a7d-932d-5bb5053ebc9e"
+        },
+        "scheduler-pressure": {
+          "runId": "60172061-8460-4db4-8554-0f45e8d59a68",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:05:45.034Z",
+          "hasReport": true,
+          "widgetId": null
+        },
+        "gpu-hotspots": {
+          "runId": "8dd7ea1a-464f-4a20-bba7-07c06ecee10c",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:05:42.435Z",
+          "hasReport": true,
+          "widgetId": null
+        },
+        "fabric-storage": {
+          "runId": "5ed4d73e-bec4-4d2b-a7fa-6587a9500bd7",
+          "status": "completed",
+          "updatedAt": "2026-03-24T20:12:25.461Z",
+          "hasReport": true,
+          "widgetId": "7df626e6-1a83-480c-995a-e96e9463fd68"
+        },
+        "job-correlation": {
+          "runId": "ac288ee0-1688-44d1-8e15-4a56ea2d5cb2",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:03:55.348Z",
+          "hasReport": true,
+          "widgetId": "cd71857f-e86a-4de8-8085-52050ae26cca"
+        },
+        "operator-brief": {
+          "runId": "741e405a-139c-41ae-9ce2-5fe32be16f25",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:06:18.813Z",
+          "hasReport": true,
+          "widgetId": null
+        }
+      }
+    },
+    "cluster-observability": {
+      "domainId": "cluster-observability",
+      "domainName": "Cluster Observability",
+      "updatedAt": "2026-03-24T22:07:59.487Z",
+      "reason": "startup",
+      "context": {
+        "domainId": "cluster-observability",
+        "domainName": "Cluster Observability",
+        "previewCount": 2,
+        "previews": [
+          {
+            "sourceId": "cluster-inventory",
+            "sourceType": "json-file",
+            "sourceName": "Cluster Inventory Snapshot",
+            "status": "ready",
+            "detail": {
+              "kind": "rows",
+              "rowCount": 4,
+              "metrics": {
+                "cpu_load": {
+                  "min": 0.21,
+                  "max": 0.92,
+                  "average": 0.575
+                },
+                "memory_pressure": {
+                  "min": 0.32,
+                  "max": 0.88,
+                  "average": 0.625
+                },
+                "disk_pressure": {
+                  "min": 0.1,
+                  "max": 0.73,
+                  "average": 0.333
+                }
+              },
+              "sample": [
+                {
+                  "hostname": "chi-gpu-001",
+                  "role": "gpu-node",
+                  "cluster": "training-a",
+                  "rack": "r12",
+                  "status": "degraded",
+                  "cpu_load": 0.92,
+                  "memory_pressure": 0.88,
+                  "disk_pressure": 0.31
+                },
+                {
+                  "hostname": "chi-gpu-002",
+                  "role": "gpu-node",
+                  "cluster": "training-a",
+                  "rack": "r12",
+                  "status": "healthy",
+                  "cpu_load": 0.63,
+                  "memory_pressure": 0.51,
+                  "disk_pressure": 0.19
+                },
+                {
+                  "hostname": "chi-login-001",
+                  "role": "login",
+                  "cluster": "training-a",
+                  "rack": "r03",
+                  "status": "healthy",
+                  "cpu_load": 0.21,
+                  "memory_pressure": 0.32,
+                  "disk_pressure": 0.1
+                },
+                {
+                  "hostname": "dal-storage-017",
+                  "role": "storage",
+                  "cluster": "analytics-b",
+                  "rack": "r44",
+                  "status": "warning",
+                  "cpu_load": 0.54,
+                  "memory_pressure": 0.79,
+                  "disk_pressure": 0.73
+                }
+              ]
+            }
+          },
+          {
+            "sourceId": "victoria-cluster",
+            "sourceType": "victoria-metrics",
+            "sourceName": "VictoriaMetrics HPCFund Cluster",
+            "status": "ready",
+            "detail": {
+              "queryWindow": {
+                "evaluationTime": "2026-03-24T23:59:59Z",
+                "start": "2026-03-01T00:00:00Z",
+                "end": "2026-03-24T23:59:59Z"
+              },
+              "queryResults": [
+                {
+                  "queryName": "instrumentedHostCount",
+                  "resultType": "vector",
+                  "resultCount": 1,
+                  "sample": [
+                    {
+                      "metric": {},
+                      "value": "72"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "pendingJobsByPartition",
+                  "resultType": "vector",
+                  "resultCount": 8,
+                  "sample": [
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3001x"
+                      },
+                      "value": "36"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2104x"
+                      },
+                      "value": "26"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3008x"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3258x"
+                      },
+                      "value": "2"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2101x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "__name__": "slurm_partition_jobs_pending",
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "devel"
+                      },
+                      "value": "1"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "partitionCpuSaturation",
+                  "resultType": "vector",
+                  "resultCount": 9,
+                  "sample": [
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3258x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3008x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3508x"
+                      },
+                      "value": "1"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi3001x"
+                      },
+                      "value": "0.75"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2508x"
+                      },
+                      "value": "0.7"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "staff"
+                      },
+                      "value": "0.6558823529411765"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "mi2104x"
+                      },
+                      "value": "0.6190476190476191"
+                    },
+                    {
+                      "metric": {
+                        "instance": "localhost:8080",
+                        "job": "slurm",
+                        "monitor": "example",
+                        "partition": "devel"
+                      },
+                      "value": "0.25"
+                    }
+                  ]
+                },
+                {
+                  "queryName": "hotGpusByTemperature",
+                  "resultType": "vector",
+                  "resultCount": 10,
+                  "sample": [
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v5:8000"
+                      },
+                      "value": "82"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v7:8000"
+                      },
+                      "value": "81"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v1:8000"
+                      },
+                      "value": "79"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v8:8000"
+                      },
+                      "value": "76"
+                    },
+                    {
+                      "metric": {
+                        "card": "0",
+                        "instance": "k002-004-v6:8000"
+                      },
+                      "value": "75"
+                    },
+                    {
+                      "metric": {
+                        "card": "4",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "72"
+                    },
+                    {
+                      "metric": {
+                        "card": "2",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "71"
+                    },
+                    {
+                      "metric": {
+                        "card": "6",
+                        "instance": "k002-003:8000"
+                      },
+                      "value": "69"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "workspacePlan": {
+        "domainId": "cluster-observability",
+        "layoutMode": "split",
+        "focusPanelId": "capacity-pressure",
+        "visiblePanelIds": [
+          "capacity-pressure",
+          "operator-brief",
+          "fleet-health"
+        ],
+        "panelGroups": [
+          {
+            "id": "group-now",
+            "title": "Now: Capacity & Queue Pressure",
+            "panelIds": [
+              "capacity-pressure"
+            ]
+          },
+          {
+            "id": "group-ops",
+            "title": "Shift Execution: Handoff & Action List",
+            "panelIds": [
+              "operator-brief"
+            ]
+          },
+          {
+            "id": "group-risk",
+            "title": "Context: Fleet Risk Ranking",
+            "panelIds": [
+              "fleet-health"
+            ]
+          }
+        ],
+        "collapsedSections": [
+          "recent-runs"
+        ],
+        "recommendedActions": [
+          "Run/refresh 'Capacity Pressure' first (preferred panel) to validate current partition backlog and saturation hotspots.",
+          "Cross-check top queue partitions (e.g., mi3001x, mi2104x) against down/drained capacity and policy/QOS constraints.",
+          "Use 'Operator Brief' as the working checklist for immediate mitigations (degraded host, hot GPUs, storage pressure).",
+          "After mitigating capacity bottlenecks, review 'Fleet Health' to confirm whether risk is localized (specific hosts) or spreading fleet-wide."
+        ],
+        "rationale": "For a routine monitoring tick with an explicit preference for Capacity Pressure, the workspace prioritizes the scheduler/partition backlog and utilization signals that most directly map to user impact (queueing and saturation). The Operator Brief is kept adjacent as the execution-oriented summary for rapid triage and shift continuity, while Fleet Health is retained as supporting context for host-level outliers. Recent runs are collapsed to reduce noise while keeping the current data source preview accessible for quick validation of data freshness/coverage (inventory sample size vs VictoriaMetrics host count).",
+        "updatedAt": "2026-03-24T22:05:39.981Z"
+      },
+      "panelStatus": {
+        "fleet-health": {
+          "runId": "ccc5e83d-6dc7-4049-af02-60ce12bc5e36",
+          "status": "in_progress",
+          "updatedAt": "2026-03-24T22:07:59.482Z",
+          "hasReport": false,
+          "widgetId": null
+        },
+        "capacity-pressure": {
+          "runId": "a864fd02-4d3f-4e4e-8a4d-79c6cdc8f6ec",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:05:59.322Z",
+          "hasReport": true,
+          "widgetId": null
+        },
+        "operator-brief": {
+          "runId": "5a5c3da9-9bde-4070-9212-b04d1877e306",
+          "status": "completed",
+          "updatedAt": "2026-03-24T22:05:58.327Z",
+          "hasReport": true,
+          "widgetId": null
+        }
+      }
+    }
+  }
+}

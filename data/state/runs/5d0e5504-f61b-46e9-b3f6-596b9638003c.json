@@ -1,0 +1,381 @@
+{
+  "id": "5d0e5504-f61b-46e9-b3f6-596b9638003c",
+  "domainId": "cluster-observability",
+  "panelId": "capacity-pressure",
+  "panelTitle": "Capacity Pressure",
+  "status": "completed",
+  "createdAt": "2026-03-24T21:59:29.937Z",
+  "updatedAt": "2026-03-24T21:59:52.627Z",
+  "context": {
+    "domainId": "cluster-observability",
+    "domainName": "Cluster Observability",
+    "previewCount": 2,
+    "previews": [
+      {
+        "sourceId": "cluster-inventory",
+        "sourceType": "json-file",
+        "sourceName": "Cluster Inventory Snapshot",
+        "status": "ready",
+        "detail": {
+          "kind": "rows",
+          "rowCount": 4,
+          "metrics": {
+            "cpu_load": {
+              "min": 0.21,
+              "max": 0.92,
+              "average": 0.575
+            },
+            "memory_pressure": {
+              "min": 0.32,
+              "max": 0.88,
+              "average": 0.625
+            },
+            "disk_pressure": {
+              "min": 0.1,
+              "max": 0.73,
+              "average": 0.333
+            }
+          },
+          "sample": [
+            {
+              "hostname": "chi-gpu-001",
+              "role": "gpu-node",
+              "cluster": "training-a",
+              "rack": "r12",
+              "status": "degraded",
+              "cpu_load": 0.92,
+              "memory_pressure": 0.88,
+              "disk_pressure": 0.31
+            },
+            {
+              "hostname": "chi-gpu-002",
+              "role": "gpu-node",
+              "cluster": "training-a",
+              "rack": "r12",
+              "status": "healthy",
+              "cpu_load": 0.63,
+              "memory_pressure": 0.51,
+              "disk_pressure": 0.19
+            },
+            {
+              "hostname": "chi-login-001",
+              "role": "login",
+              "cluster": "training-a",
+              "rack": "r03",
+              "status": "healthy",
+              "cpu_load": 0.21,
+              "memory_pressure": 0.32,
+              "disk_pressure": 0.1
+            },
+            {
+              "hostname": "dal-storage-017",
+              "role": "storage",
+              "cluster": "analytics-b",
+              "rack": "r44",
+              "status": "warning",
+              "cpu_load": 0.54,
+              "memory_pressure": 0.79,
+              "disk_pressure": 0.73
+            }
+          ]
+        }
+      },
+      {
+        "sourceId": "victoria-cluster",
+        "sourceType": "victoria-metrics",
+        "sourceName": "VictoriaMetrics HPCFund Cluster",
+        "status": "ready",
+        "detail": {
+          "queryWindow": {
+            "evaluationTime": "2026-03-24T23:59:59Z",
+            "start": "2026-03-01T00:00:00Z",
+            "end": "2026-03-24T23:59:59Z"
+          },
+          "queryResults": [
+            {
+              "queryName": "instrumentedHostCount",
+              "resultType": "vector",
+              "resultCount": 1,
+              "sample": [
+                {
+                  "metric": {},
+                  "value": "72"
+                }
+              ]
+            },
+            {
+              "queryName": "pendingJobsByPartition",
+              "resultType": "vector",
+              "resultCount": 8,
+              "sample": [
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3001x"
+                  },
+                  "value": "36"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi2104x"
+                  },
+                  "value": "26"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3008x"
+                  },
+                  "value": "2"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3258x"
+                  },
+                  "value": "2"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi2508x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3508x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi2101x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "__name__": "slurm_partition_jobs_pending",
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "devel"
+                  },
+                  "value": "1"
+                }
+              ]
+            },
+            {
+              "queryName": "partitionCpuSaturation",
+              "resultType": "vector",
+              "resultCount": 9,
+              "sample": [
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3008x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3258x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3508x"
+                  },
+                  "value": "1"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi3001x"
+                  },
+                  "value": "0.75"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi2508x"
+                  },
+                  "value": "0.7"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "staff"
+                  },
+                  "value": "0.6558823529411765"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "mi2104x"
+                  },
+                  "value": "0.6190476190476191"
+                },
+                {
+                  "metric": {
+                    "instance": "localhost:8080",
+                    "job": "slurm",
+                    "monitor": "example",
+                    "partition": "devel"
+                  },
+                  "value": "0.25"
+                }
+              ]
+            },
+            {
+              "queryName": "hotGpusByTemperature",
+              "resultType": "vector",
+              "resultCount": 10,
+              "sample": [
+                {
+                  "metric": {
+                    "card": "0",
+                    "instance": "k002-004-v5:8000"
+                  },
+                  "value": "82"
+                },
+                {
+                  "metric": {
+                    "card": "0",
+                    "instance": "k002-004-v7:8000"
+                  },
+                  "value": "81"
+                },
+                {
+                  "metric": {
+                    "card": "0",
+                    "instance": "k002-004-v1:8000"
+                  },
+                  "value": "79"
+                },
+                {
+                  "metric": {
+                    "card": "0",
+                    "instance": "k002-004-v8:8000"
+                  },
+                  "value": "76"
+                },
+                {
+                  "metric": {
+                    "card": "0",
+                    "instance": "k002-004-v6:8000"
+                  },
+                  "value": "75"
+                },
+                {
+                  "metric": {
+                    "card": "4",
+                    "instance": "k002-003:8000"
+                  },
+                  "value": "72"
+                },
+                {
+                  "metric": {
+                    "card": "2",
+                    "instance": "k002-003:8000"
+                  },
+                  "value": "71"
+                },
+                {
+                  "metric": {
+                    "card": "6",
+                    "instance": "k002-003:8000"
+                  },
+                  "value": "69"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "report": {
+    "narrative": [
+      "Highest host-level pressure (from the inventory snapshot) is concentrated in two places: (1) chi-gpu-001 in cluster training-a (status=degraded) with very high CPU load (0.92) and memory pressure (0.88), indicating immediate contention and likely user-visible slowdowns or job instability; and (2) dal-storage-017 in cluster analytics-b (status=warning) with high memory pressure (0.79) and the highest disk pressure (0.73), suggesting elevated risk of I/O throttling, cache eviction, or storage service degradation.\n\nAt the scheduler/cluster level (VictoriaMetrics Slurm signals), queueing pressure is highest in partition mi3001x (36 pending) and mi2104x (26 pending). Several partitions show full/near-full CPU saturation (mi3008x, mi3258x, mi3508x at 1.0), but their pending queues are low (1–2), which is consistent with “busy but flowing.” In contrast, mi3001x combines notable saturation (0.75) with the largest backlog (36), making it the clearest capacity bottleneck to prioritize.\n\nThermal pressure is also present: the hottest GPUs reported reach 82°C and 81°C on k002-004-* nodes (card 0), which merits near-term investigation if your operational thresholds are ~80°C+ sustained, because it can lead to clock throttling, job slowdowns, and higher failure rates.\n\nPrioritization for operators: First, triage chi-gpu-001 (training-a) for immediate compute contention (identify top CPU/memory consumers, check for memory leaks, swap/thrashing, OOM events, noisy-neighbor workloads, and hardware health). Second, triage dal-storage-017 (analytics-b) for disk + memory pressure (disk fullness vs IOPS/latency, filesystem errors, RAID/SMART signals, cache pressure, and top talkers). Third, address cluster-wide capacity bottlenecks starting with mi3001x backlog (confirm node availability, down/drain states, reservation/QOS constraints, and whether demand requires temporary policy changes). Fourth, check hot GPU nodes for cooling/fan/airflow issues and confirm whether temperatures are transient spikes or sustained under load.\n\nConfidence caveat: the inventory snapshot shown is only 4 hosts (not fleet-representative), while VictoriaMetrics reflects a larger instrumented set (72 hosts) but the panel excerpts are point-in-time vectors; re-run/expand queries if you suspect missing hosts or if VictoriaMetrics connectivity recently flapped."
+    ],
+    "highlights": [
+      "Top host pressure: chi-gpu-001 (training-a) CPU=0.92, mem=0.88, status=degraded → highest immediate user-impact risk.",
+      "Top storage pressure: dal-storage-017 (analytics-b) mem=0.79, disk=0.73, status=warning → elevated risk of I/O degradation.",
+      "Scheduler backlog hotspots: mi3001x (36 pending, CPU sat=0.75) and mi2104x (26 pending, CPU sat≈0.62) → primary capacity-pressure signals.",
+      "Fully saturated but low-backlog partitions: mi3008x/mi3258x/mi3508x at CPU sat=1.0 with only 1–2 pending → busy but not necessarily blocked.",
+      "Thermals: hottest GPUs at 82°C and 81°C on k002-004-* (card 0) → investigate if sustained (throttling/failure risk)."
+    ],
+    "chart": {
+      "type": "line",
+      "title": "Pending Jobs by Slurm Partition (current vector sample)",
+      "labels": [
+        "mi3001x",
+        "mi2104x",
+        "mi3008x",
+        "mi3258x",
+        "mi2508x",
+        "mi3508x",
+        "mi2101x",
+        "devel"
+      ],
+      "values": [
+        36,
+        26,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  },
+  "provider": "openai-responses",
+  "trigger": "scheduled",
+  "remoteResponseId": "resp_094805a5ed715aa60069c309420090819788cb5157010454e3",
+  "widgetId": null,
+  "widgetUrl": null
+}

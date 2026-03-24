@@ -11,7 +11,9 @@ const paths = {
   appConfig: path.join(rootDir, "config", "app.config.json"),
   dataSources: path.join(rootDir, "config", "data-sources.json"),
   domainsDir: path.join(rootDir, "data", "domains"),
+  liveState: path.join(rootDir, "data", "state", "live-state.json"),
   runsDir: path.join(rootDir, "data", "state", "runs"),
+  workspacePlans: path.join(rootDir, "data", "state", "workspace-plans.json"),
   sessions: path.join(rootDir, "data", "state", "agent-sessions.json"),
   widgetsIndex: path.join(rootDir, "data", "state", "widgets", "index.json"),
   widgetBundlesDir: path.join(rootDir, "data", "state", "widget-bundles")
@@ -47,6 +49,18 @@ export class ConfigStore {
     return writeJson(path.join(paths.domainsDir, `${domain.id}.json`), domain);
   }
 
+  async getLiveState() {
+    return readJson(paths.liveState, {
+      updatedAt: null,
+      sourcePreviews: [],
+      domainSnapshots: {}
+    });
+  }
+
+  async saveLiveState(liveState) {
+    return writeJson(paths.liveState, liveState);
+  }
+
   async getSessions() {
     return readJson(paths.sessions, {});
   }
@@ -72,6 +86,26 @@ export class ConfigStore {
     return runs
       .filter(Boolean)
       .sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+  }
+
+  async getWorkspacePlans() {
+    return readJson(paths.workspacePlans, {});
+  }
+
+  async saveWorkspacePlans(workspacePlans) {
+    return writeJson(paths.workspacePlans, workspacePlans);
+  }
+
+  async getWorkspacePlan(domainId) {
+    const workspacePlans = await this.getWorkspacePlans();
+    return workspacePlans[domainId] ?? null;
+  }
+
+  async saveWorkspacePlan(domainId, workspacePlan) {
+    const workspacePlans = await this.getWorkspacePlans();
+    workspacePlans[domainId] = workspacePlan;
+    await this.saveWorkspacePlans(workspacePlans);
+    return workspacePlan;
   }
 
   async getWidgets() {

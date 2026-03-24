@@ -7,6 +7,7 @@ import { ConfigStore } from "./services/config-store.js";
 import { previewSource } from "./services/data-sources.js";
 import { AgentRuntime } from "./services/agent-runtime.js";
 import { WidgetService } from "./services/widget-service.js";
+import { RefreshCoordinator } from "./services/refresh-coordinator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,22 +18,33 @@ export function createApp() {
   const configStore = new ConfigStore();
   const widgetService = new WidgetService({ configStore });
   const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService });
+  const refreshCoordinator = new RefreshCoordinator({ configStore, agentRuntime, eventBus });
 
   app.use(express.json({ limit: "1mb" }));
   app.use(express.static(path.join(__dirname, "..", "public")));
 
   app.get("/api/bootstrap", async (_request, response, next) => {
     try {
-      const [appConfig, dataSources, domains, runs, widgets] = await Promise.all([
+      const [appConfig, dataSources, domains, runs, widgets, workspacePlans, liveState] = await Promise.all([
         configStore.getAppConfig(),
         configStore.getDataSources(),
         configStore.listDomains(),
         configStore.listRuns(),
-        configStore.listWidgets()
+        configStore.listWidgets(),
+        configStore.getWorkspacePlans(),
+        configStore.getLiveState()
       ]);
 
-      const sourcePreviews = await Promise.all(dataSources.map((source) => previewSource(source)));
-      const recentRuns = runs.slice(0, 12);
+      const sourcePreviews = liveState.sourcePreviews?.length
+        ? liveState.sourcePreviews
+        : await Promise.all(dataSources.map((source) => previewSource(source)));
+      const snapshotRunIds = new Set(
+        Object.values(liveState.domainSnapshots ?? {})
+          .flatMap((snapshot) => Object.values(snapshot?.panelStatus ?? {}))
+          .map((status) => status?.runId)
+          .filter(Boolean)
+      );
+      const recentRuns = runs.filter((run, index) => index < 12 || snapshotRunIds.has(run.id));
 
       void agentRuntime.reconcileRecentRuns(recentRuns);
 
@@ -43,6 +55,9 @@ export function createApp() {
         sourcePreviews,
         runs: recentRuns,
         widgets: widgets.slice(0, 24),
+        workspacePlans,
+        domainSnapshots: liveState.domainSnapshots ?? {},
+        liveStateUpdatedAt: liveState.updatedAt ?? null,
         agent: {
           mode: process.env.OPENAI_API_KEY ? "openai-responses" : "fallback",
           hasApiKey: Boolean(process.env.OPENAI_API_KEY)
@@ -90,15 +105,62 @@ export function createApp() {
 
   app.post("/api/analysis/run", async (request, response, next) => {
     try {
-      const { domainId, panelId } = request.body ?? {};
+      const { domainId, panelId, force = false } = request.body ?? {};
 
       if (!domainId || !panelId) {
         response.status(400).json({ error: "domainId and panelId are required." });
         return;
       }
 
-      const run = await agentRuntime.runAnalysis({ domainId, panelId });
+      const appConfig = await configStore.getAppConfig();
+      const run = await agentRuntime.ensurePanelRun({
+        domainId,
+        panelId,
+        force,
+        freshnessMs: appConfig.refresh?.analysisTtlMs ?? 300000,
+        trigger: force ? "manual-force" : "manual"
+      });
       response.status(202).json(run);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/refresh/domain", async (request, response, next) => {
+    try {
+      const { domainId, force = false } = request.body ?? {};
+
+      if (!domainId) {
+        response.status(400).json({ error: "domainId is required." });
+        return;
+      }
+
+      const snapshot = await refreshCoordinator.refreshDomain(domainId, {
+        reason: force ? "manual-force" : "manual-refresh",
+        force
+      });
+      response.status(202).json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspace/plan", async (request, response, next) => {
+    try {
+      const { domainId, preferredPanelId, reason } = request.body ?? {};
+
+      if (!domainId) {
+        response.status(400).json({ error: "domainId is required." });
+        return;
+      }
+
+      const workspacePlan = await agentRuntime.planWorkspace({
+        domainId,
+        preferredPanelId: preferredPanelId ?? null,
+        reason: reason ?? "manual-refresh"
+      });
+
+      response.status(201).json(workspacePlan);
     } catch (error) {
       next(error);
     }
@@ -232,16 +294,30 @@ export function createApp() {
       response.write(`data: ${JSON.stringify(run)}\n\n`);
     };
 
+    const onWorkspaceUpdate = (workspacePlan) => {
+      response.write(`event: workspace.update\n`);
+      response.write(`data: ${JSON.stringify(workspacePlan)}\n\n`);
+    };
+
+    const onDomainRefresh = (snapshot) => {
+      response.write(`event: domain.refresh\n`);
+      response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+    };
+
     const heartbeat = setInterval(() => {
       response.write("event: heartbeat\n");
       response.write(`data: ${JSON.stringify({ ts: Date.now() })}\n\n`);
     }, 15000);
 
     eventBus.on("run.update", onRunUpdate);
+    eventBus.on("workspace.update", onWorkspaceUpdate);
+    eventBus.on("domain.refresh", onDomainRefresh);
 
     request.on("close", () => {
       clearInterval(heartbeat);
       eventBus.off("run.update", onRunUpdate);
+      eventBus.off("workspace.update", onWorkspaceUpdate);
+      eventBus.off("domain.refresh", onDomainRefresh);
     });
   });
 
@@ -252,6 +328,7 @@ export function createApp() {
     });
   });
 
+  app.locals.refreshCoordinator = refreshCoordinator;
   return app;
 }
 
@@ -265,6 +342,8 @@ export async function startServer(
   await new Promise((resolve) => {
     server.listen(port, host, resolve);
   });
+
+  await app.locals.refreshCoordinator?.start();
 
   return { app, server };
 }

@@ -15,5 +15,12 @@
     "model": "gpt-5.1-codex-mini",
     "reasoningEffort": "medium",
     "sandboxMode": "iframe"
+  },
+  "refresh": {
+    "schedulerTickMs": 60000,
+    "sourcePreviewTtlMs": 60000,
+    "workspacePlanTtlMs": 300000,
+    "analysisTtlMs": 300000,
+    "panelsPerSweep": 3
   }
 }
