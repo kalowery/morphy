@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-03-24T22:08:59.540Z",
+  "updatedAt": "2026-03-24T23:36:49.471Z",
   "sourcePreviews": [
     {
       "sourceId": "cluster-inventory",
@@ -124,7 +124,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi3008x"
+                  "partition": "mi3258x"
                 },
                 "value": "2"
               },
@@ -134,7 +134,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi3258x"
+                  "partition": "mi3008x"
                 },
                 "value": "2"
               },
@@ -154,7 +154,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi2101x"
+                  "partition": "mi3508x"
                 },
                 "value": "1"
               },
@@ -164,7 +164,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi3508x"
+                  "partition": "mi2101x"
                 },
                 "value": "1"
               },
@@ -190,7 +190,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi3008x"
+                  "partition": "mi3258x"
                 },
                 "value": "1"
               },
@@ -199,7 +199,7 @@
                   "instance": "localhost:8080",
                   "job": "slurm",
                   "monitor": "example",
-                  "partition": "mi3258x"
+                  "partition": "mi3008x"
                 },
                 "value": "1"
               },
@@ -372,7 +372,7 @@
     "hpcfund-cluster-observability": {
       "domainId": "hpcfund-cluster-observability",
       "domainName": "HPCFund Cluster Observability",
-      "updatedAt": "2026-03-24T22:08:59.540Z",
+      "updatedAt": "2026-03-24T23:36:49.471Z",
       "reason": "tick",
       "context": {
         "domainId": "hpcfund-cluster-observability",
@@ -433,7 +433,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3008x"
+                        "partition": "mi3258x"
                       },
                       "value": "2"
                     },
@@ -443,7 +443,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3258x"
+                        "partition": "mi3008x"
                       },
                       "value": "2"
                     },
@@ -463,7 +463,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi2101x"
+                        "partition": "mi3508x"
                       },
                       "value": "1"
                     },
@@ -473,7 +473,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3508x"
+                        "partition": "mi2101x"
                       },
                       "value": "1"
                     },
@@ -499,7 +499,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3008x"
+                        "partition": "mi3258x"
                       },
                       "value": "1"
                     },
@@ -508,7 +508,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3258x"
+                        "partition": "mi3008x"
                       },
                       "value": "1"
                     },
@@ -644,33 +644,27 @@
           "operator-brief",
           "scheduler-pressure",
           "gpu-hotspots",
-          "job-correlation",
           "fleet-health",
-          "fabric-storage"
+          "fabric-storage",
+          "job-correlation"
         ],
         "panelGroups": [
           {
-            "id": "handoff",
-            "title": "Shift Handoff (Primary)",
+            "id": "priority-findings",
+            "title": "Priority Findings",
             "panelIds": [
-              "operator-brief"
-            ]
-          },
-          {
-            "id": "demand-thermal",
-            "title": "Demand + Thermal Drivers (Supporting)",
-            "panelIds": [
+              "operator-brief",
               "scheduler-pressure",
-              "gpu-hotspots",
-              "job-correlation"
+              "gpu-hotspots"
             ]
           },
           {
-            "id": "infra-risk",
-            "title": "Infrastructure Risk Deep-Dive (As Available)",
+            "id": "follow-up-analysis",
+            "title": "Follow-up Analysis",
             "panelIds": [
               "fleet-health",
-              "fabric-storage"
+              "fabric-storage",
+              "job-correlation"
             ]
           }
         ],
@@ -679,12 +673,13 @@
           "source-preview"
         ],
         "recommendedActions": [
-          "Keep Operator Brief as the working panel for handoff; use Scheduler Pressure + GPU Hotspots to validate the two dominant narratives (mi3001x/mi2104x backlog; k002-004-v* thermal hotspots).",
-          "Re-run Job Correlation with expanded Slurm job->node/partition/user metadata (job IDs, user/account, nodelist, partition, GRES/GPU request) to close the attribution gap called out in the completed report.",
-          "If InfiniBand/SMART series exist in VictoriaMetrics but were omitted from the preview, re-run Fabric And Storage with explicit IB error counters + SMART attributes; otherwise treat it as informational/low-confidence."
+          "Review operator-brief first for the handoff summary.",
+          "Use scheduler-pressure next to confirm mi3001x and mi2104x backlog concentration.",
+          "Use gpu-hotspots alongside the brief to investigate the k002-004-v* thermal pattern.",
+          "Keep fleet-health available as a secondary synthesis panel."
         ],
-        "rationale": "Planning reason is analysis-complete with preferred panel = operator-brief, so the layout prioritizes the completed handoff summary while keeping the most relevant supporting analyses (scheduler pressure, GPU thermals, and correlation) immediately adjacent. Lower-signal panels (fleet/fabric) remain accessible but grouped as deep-dives given the current evidence gaps. Collapsing Recent Runs and Source Preview reduces noise without changing the host shell or removing functionality.",
-        "updatedAt": "2026-03-24T22:06:31.304Z"
+        "rationale": "Recent completed analysis already establishes the main story: operator handoff, concentrated scheduler backlog, and a clear GPU thermal hotspot cohort. A split layout keeps the preferred brief in focus while preserving immediate access to the two strongest supporting panels. Less-supported panels remain visible but grouped as follow-up because the current preview lacks InfiniBand, SMART, and job/user attribution depth. Collapsing recent runs and source preview reduces repeated context without changing the overall shell structure.",
+        "updatedAt": "2026-03-24T23:36:20.642Z"
       },
       "panelStatus": {
         "fleet-health": {
@@ -695,16 +690,16 @@
           "widgetId": "085b7fc5-eaa2-4a7d-932d-5bb5053ebc9e"
         },
         "scheduler-pressure": {
-          "runId": "60172061-8460-4db4-8554-0f45e8d59a68",
+          "runId": "af3288a6-6471-4831-93e7-d3d1ce8daac0",
           "status": "completed",
-          "updatedAt": "2026-03-24T22:05:45.034Z",
+          "updatedAt": "2026-03-24T23:32:41.503Z",
           "hasReport": true,
-          "widgetId": null
+          "widgetId": "9eb0f330-0c96-4ef4-8052-082293682fba"
         },
         "gpu-hotspots": {
-          "runId": "8dd7ea1a-464f-4a20-bba7-07c06ecee10c",
+          "runId": "230be062-3c0d-49ed-b080-9b8625af927f",
           "status": "completed",
-          "updatedAt": "2026-03-24T22:05:42.435Z",
+          "updatedAt": "2026-03-24T23:32:01.082Z",
           "hasReport": true,
           "widgetId": null
         },
@@ -723,9 +718,9 @@
           "widgetId": "cd71857f-e86a-4de8-8085-52050ae26cca"
         },
         "operator-brief": {
-          "runId": "741e405a-139c-41ae-9ce2-5fe32be16f25",
+          "runId": "72a8b184-ee13-410e-ae61-8c0acac3934e",
           "status": "completed",
-          "updatedAt": "2026-03-24T22:06:18.813Z",
+          "updatedAt": "2026-03-24T23:36:03.698Z",
           "hasReport": true,
           "widgetId": null
         }
@@ -734,8 +729,8 @@
     "cluster-observability": {
       "domainId": "cluster-observability",
       "domainName": "Cluster Observability",
-      "updatedAt": "2026-03-24T22:07:59.487Z",
-      "reason": "startup",
+      "updatedAt": "2026-03-24T23:35:51.212Z",
+      "reason": "tick",
       "context": {
         "domainId": "cluster-observability",
         "domainName": "Cluster Observability",
@@ -864,7 +859,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3008x"
+                        "partition": "mi3258x"
                       },
                       "value": "2"
                     },
@@ -874,7 +869,7 @@
                         "instance": "localhost:8080",
                         "job": "slurm",
                         "monitor": "example",
-                        "partition": "mi3258x"
+                        "partition": "mi3008x"
                       },
                       "value": "2"
                     },
@@ -1070,66 +1065,69 @@
       "workspacePlan": {
         "domainId": "cluster-observability",
         "layoutMode": "split",
-        "focusPanelId": "capacity-pressure",
+        "focusPanelId": "operator-brief",
         "visiblePanelIds": [
-          "capacity-pressure",
           "operator-brief",
+          "capacity-pressure",
           "fleet-health"
         ],
         "panelGroups": [
           {
-            "id": "group-now",
-            "title": "Now: Capacity & Queue Pressure",
+            "id": "priority-analyses",
+            "title": "Priority Analyses",
             "panelIds": [
-              "capacity-pressure"
-            ]
-          },
-          {
-            "id": "group-ops",
-            "title": "Shift Execution: Handoff & Action List",
-            "panelIds": [
-              "operator-brief"
-            ]
-          },
-          {
-            "id": "group-risk",
-            "title": "Context: Fleet Risk Ranking",
-            "panelIds": [
+              "operator-brief",
+              "capacity-pressure",
               "fleet-health"
             ]
           }
         ],
         "collapsedSections": [
-          "recent-runs"
+          "recent-runs",
+          "source-preview"
         ],
         "recommendedActions": [
-          "Run/refresh 'Capacity Pressure' first (preferred panel) to validate current partition backlog and saturation hotspots.",
-          "Cross-check top queue partitions (e.g., mi3001x, mi2104x) against down/drained capacity and policy/QOS constraints.",
-          "Use 'Operator Brief' as the working checklist for immediate mitigations (degraded host, hot GPUs, storage pressure).",
-          "After mitigating capacity bottlenecks, review 'Fleet Health' to confirm whether risk is localized (specific hosts) or spreading fleet-wide."
+          "Review Operator Brief first for shift-handoff priorities and confidence caveats.",
+          "Use Capacity Pressure next to validate the mi3001x and mi2104x queue bottlenecks and host resource hotspots.",
+          "Use Fleet Health as supporting context to confirm host triage order, especially chi-gpu-001 and dal-storage-017."
         ],
-        "rationale": "For a routine monitoring tick with an explicit preference for Capacity Pressure, the workspace prioritizes the scheduler/partition backlog and utilization signals that most directly map to user impact (queueing and saturation). The Operator Brief is kept adjacent as the execution-oriented summary for rapid triage and shift continuity, while Fleet Health is retained as supporting context for host-level outliers. Recent runs are collapsed to reduce noise while keeping the current data source preview accessible for quick validation of data freshness/coverage (inventory sample size vs VictoriaMetrics host count).",
-        "updatedAt": "2026-03-24T22:05:39.981Z"
+        "rationale": "All core analyses are already completed, so the workspace should emphasize the most decision-ready summary while keeping supporting diagnostics immediately adjacent. Operator Brief is the preferred panel and best matches the current analysis-complete state, with Capacity Pressure and Fleet Health retained in priority order for quick drilldown. Recent runs and source preview are secondary now and can be collapsed to reduce noise without changing the overall shell.",
+        "updatedAt": "2026-03-24T23:33:24.541Z"
       },
       "panelStatus": {
         "fleet-health": {
-          "runId": "ccc5e83d-6dc7-4049-af02-60ce12bc5e36",
+          "runId": "d41b702a-ec5e-495b-816b-1d2c4235aa24",
           "status": "in_progress",
-          "updatedAt": "2026-03-24T22:07:59.482Z",
+          "updatedAt": "2026-03-24T23:35:51.191Z",
           "hasReport": false,
           "widgetId": null
         },
         "capacity-pressure": {
-          "runId": "a864fd02-4d3f-4e4e-8a4d-79c6cdc8f6ec",
+          "runId": "3a62de0a-c3c2-42de-a0b4-02d4877e8d0d",
           "status": "completed",
-          "updatedAt": "2026-03-24T22:05:59.322Z",
+          "updatedAt": "2026-03-24T23:33:09.935Z",
           "hasReport": true,
-          "widgetId": null
+          "widgetId": "8ceeddc0-f90f-457b-a297-8510f71f4ac5"
         },
         "operator-brief": {
-          "runId": "5a5c3da9-9bde-4070-9212-b04d1877e306",
+          "runId": "f6b1cc4a-ed98-4704-918e-bee867ea790b",
           "status": "completed",
-          "updatedAt": "2026-03-24T22:05:58.327Z",
+          "updatedAt": "2026-03-24T23:34:45.589Z",
+          "hasReport": true,
+          "widgetId": "309a4fc9-87e7-4d42-80de-4df358b223c4"
+        }
+      }
+    }
+  }
+}
+.935Z",
+          "hasReport": true,
+          "widgetId": "8ceeddc0-f90f-457b-a297-8510f71f4ac5"
+        },
+        "operator-brief": {
+          "runId": "540c8cee-a5d6-47a3-aa29-f8e4476c3357",
+          "status": "completed",
+          "updatedAt": "2026-03-24T23:36:22.217Z",
           "hasReport": true,
           "widgetId": null
         }

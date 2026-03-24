@@ -10,7 +10,9 @@ const state = {
   selectedDomainId: null,
   activePanelId: null,
   isStudioOpen: false,
-  panelRunState: {}
+  panelRunState: {},
+  bootstrapSignature: null,
+  currentDomainRenderSignature: null
 };
 
 const elements = {
@@ -102,6 +104,44 @@ function latestWidgetRun(domainRuns, panelId) {
 
 function visibleRunsForDomain(domainId) {
   return domainId ? state.runs.filter((run) => run.domainId === domainId) : state.runs;
+}
+
+function domainRenderSignature(domainId) {
+  if (!domainId) {
+    return "no-domain";
+  }
+
+  const snapshot = state.domainSnapshots[domainId] ?? null;
+  const workspacePlan = state.workspacePlans[domainId] ?? snapshot?.workspacePlan ?? null;
+  const runs = visibleRunsForDomain(domainId).map((run) => [
+    run.id,
+    run.panelId,
+    run.status,
+    run.updatedAt,
+    run.widgetId ?? null
+  ]);
+
+  return JSON.stringify({
+    domainId,
+    activePanelId: state.activePanelId,
+    runs,
+    workspacePlan: workspacePlan
+      ? {
+          focusPanelId: workspacePlan.focusPanelId,
+          visiblePanelIds: workspacePlan.visiblePanelIds,
+          panelGroups: workspacePlan.panelGroups,
+          collapsedSections: workspacePlan.collapsedSections
+        }
+      : null,
+    panelStatus: snapshot?.panelStatus ?? null,
+    sourcePreviews: state.sourcePreviews.map((preview) => [
+      preview.sourceId,
+      preview.status,
+      preview.detail?.queryWindow?.evaluationTime ?? null,
+      preview.detail?.rowCount ?? null,
+      preview.detail?.resultCount ?? null
+    ])
+  });
 }
 
 function dedupeRunsForDisplay(runs) {
@@ -216,6 +256,50 @@ function orderedPanelsForDomain(domain) {
   return orderedIds
     .map((panelId) => domain.panels.find((panel) => panel.id === panelId))
     .filter(Boolean);
+}
+
+function currentDomainRenderSignature(domain) {
+  if (!domain) {
+    return "no-domain";
+  }
+
+  const workspacePlan = currentWorkspacePlan();
+  const orderedPanels = orderedPanelsForDomain(domain);
+  const panel = orderedPanels.find((entry) => entry.id === state.activePanelId) ?? orderedPanels[0] ?? null;
+  const domainRuns = visibleRunsForDomain(domain.id);
+  const latestRun = panel ? latestRenderableRun(domainRuns, panel.id) : null;
+  const widgetRun = panel ? latestWidgetRun(domainRuns, panel.id) : null;
+  const activeRun = panel ? activePanelRun(domainRuns, panel.id) : null;
+  const staleRun = panel ? stalePanelRun(domainRuns, panel.id) : null;
+  const failedRun = panel ? failedPanelRun(domainRuns, panel.id) : null;
+  const panelKey = panel ? `${domain.id}:${panel.id}` : null;
+
+  return JSON.stringify({
+    domainId: domain.id,
+    activePanelId: state.activePanelId,
+    orderedPanels: orderedPanels.map((entry) => entry.id),
+    workspacePlan: workspacePlan
+      ? {
+          focusPanelId: workspacePlan.focusPanelId,
+          visiblePanelIds: workspacePlan.visiblePanelIds,
+          panelGroups: workspacePlan.panelGroups,
+          collapsedSections: workspacePlan.collapsedSections,
+          rationale: workspacePlan.rationale,
+          recommendedActions: workspacePlan.recommendedActions
+        }
+      : null,
+    panelState: panel
+      ? {
+          panelId: panel.id,
+          transientState: panelKey ? state.panelRunState[panelKey] ?? null : null,
+          latestRun: latestRun ? [latestRun.id, latestRun.updatedAt, latestRun.status, latestRun.widgetId ?? null] : null,
+          widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetId ?? null] : null,
+          activeRun: activeRun ? [activeRun.id, activeRun.updatedAt] : null,
+          staleRun: staleRun ? [staleRun.id, staleRun.updatedAt] : null,
+          failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null
+        }
+      : null
+  });
 }
 
 function renderWorkspacePlan(workspacePlan) {
@@ -526,6 +610,7 @@ function renderCurrentDomain() {
   const domain = currentDomain();
 
   if (!domain) {
+    state.currentDomainRenderSignature = "no-domain";
     elements.domainName.textContent = "Select a domain";
     elements.domainDescription.textContent = "Upload or generate a domain description to project a specialized analytics UI.";
     elements.domainChip.textContent = "No domain";
@@ -548,6 +633,13 @@ function renderCurrentDomain() {
   elements.domainName.textContent = domain.name;
   elements.domainDescription.textContent = domain.description;
   elements.domainChip.textContent = `${domain.panels.length} panels`;
+  const nextRenderSignature = currentDomainRenderSignature(domain);
+
+  if (state.currentDomainRenderSignature === nextRenderSignature) {
+    return;
+  }
+
+  state.currentDomainRenderSignature = nextRenderSignature;
   elements.panelRail.innerHTML = "";
   elements.panelStage.innerHTML = "";
   renderWorkspacePlan(workspacePlan);
@@ -673,7 +765,23 @@ function renderRuns() {
 }
 
 async function refresh() {
+  const previousSelectedDomainId = state.selectedDomainId;
+  const previousDomainSignature = domainRenderSignature(previousSelectedDomainId);
   const payload = await request("/api/bootstrap");
+  const nextSignature = JSON.stringify({
+    liveStateUpdatedAt: payload.liveStateUpdatedAt ?? null,
+    runs: (payload.runs ?? []).map((run) => [run.id, run.updatedAt, run.status, run.widgetId ?? null]),
+    widgets: (payload.widgets ?? []).map((widget) => widget.id),
+    plans: Object.fromEntries(
+      Object.entries(payload.workspacePlans ?? {}).map(([domainId, workspacePlan]) => [domainId, workspacePlan?.updatedAt ?? null])
+    )
+  });
+
+  if (state.bootstrapSignature && state.bootstrapSignature === nextSignature) {
+    return;
+  }
+
+  state.bootstrapSignature = nextSignature;
   state.appConfig = payload.appConfig;
   state.domains = payload.domains;
   state.dataSources = payload.dataSources;
@@ -706,12 +814,18 @@ async function refresh() {
   if (!selectedDomain?.panels.some((panel) => panel.id === state.activePanelId)) {
     state.activePanelId = workspacePlan?.focusPanelId ?? selectedDomain?.panels[0]?.id ?? null;
   }
+  const nextDomainSignature = domainRenderSignature(state.selectedDomainId);
+  const shouldRenderCurrentDomain =
+    previousSelectedDomainId !== state.selectedDomainId ||
+    previousDomainSignature !== nextDomainSignature;
 
   elements.appName.textContent = payload.appConfig.app?.name || "Morphy";
   renderAgentStatus(payload.agent);
   renderDomains();
   renderSourcePreviews();
-  renderCurrentDomain();
+  if (shouldRenderCurrentDomain) {
+    renderCurrentDomain();
+  }
   renderRuns();
   renderStudio();
   void reconcileStaleRuns();
@@ -876,18 +990,21 @@ function connectEvents() {
     state.runs = [run, ...state.runs.filter((entry) => entry.id !== run.id)].sort(
       (left, right) => new Date(right.updatedAt) - new Date(left.updatedAt)
     );
-    renderCurrentDomain();
-    renderRuns();
+    if (run.domainId === state.selectedDomainId) {
+      renderCurrentDomain();
+      renderRuns();
+    }
   });
   events.addEventListener("workspace.update", (event) => {
     const workspacePlan = JSON.parse(event.data);
     state.workspacePlans[workspacePlan.domainId] = workspacePlan;
 
-    if (workspacePlan.domainId === state.selectedDomainId && (!state.activePanelId || !workspacePlan.visiblePanelIds?.includes(state.activePanelId))) {
-      state.activePanelId = workspacePlan.focusPanelId;
+    if (workspacePlan.domainId === state.selectedDomainId) {
+      if (!state.activePanelId || !workspacePlan.visiblePanelIds?.includes(state.activePanelId)) {
+        state.activePanelId = workspacePlan.focusPanelId;
+      }
+      renderCurrentDomain();
     }
-
-    renderCurrentDomain();
   });
   events.addEventListener("domain.refresh", (event) => {
     const snapshot = JSON.parse(event.data);
@@ -904,9 +1021,9 @@ function connectEvents() {
           .filter((preview) => !snapshot.context.previews.some((nextPreview) => nextPreview.sourceId === preview.sourceId))
           .concat(snapshot.context.previews);
       }
+      renderSourcePreviews();
+      renderCurrentDomain();
     }
-    renderSourcePreviews();
-    renderCurrentDomain();
   });
 }
 

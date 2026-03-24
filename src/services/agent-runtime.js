@@ -353,7 +353,7 @@ export class AgentRuntime {
     }
 
     const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.2",
+      model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -415,7 +415,7 @@ export class AgentRuntime {
     }
 
     const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.2",
+      model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -542,7 +542,7 @@ export class AgentRuntime {
 
     const previousResponseId = sessions[domainId]?.previousResponseId;
     const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.2",
+      model: appConfig.agent?.model ?? "gpt-5.4",
       store: true,
       background: Boolean(appConfig.agent?.allowBackground),
       previous_response_id: previousResponseId,

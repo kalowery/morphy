@@ -51,7 +51,5 @@
     }
   });
 
-  emit("widget:bootstrap", {
-    href: window.location.href
-  });
+  emit("widget:bootstrap", {});
 })();

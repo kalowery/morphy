@@ -7,12 +7,12 @@
     "defaultDomainId": "hpcfund-cluster-observability"
   },
   "agent": {
-    "model": "gpt-5.2",
+    "model": "gpt-5.4",
     "reasoningEffort": "medium",
     "allowBackground": true
   },
   "codegen": {
-    "model": "gpt-5.1-codex-mini",
+    "model": "gpt-5.4",
     "reasoningEffort": "medium",
     "sandboxMode": "iframe"
   },

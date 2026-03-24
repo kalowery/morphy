@@ -357,7 +357,7 @@ export class WidgetService {
       entrypoint: "index.html",
       files: ["index.html", "styles.css", "widget.js", "manifest.json"],
       generatedAt: new Date().toISOString(),
-      provider: this.openai ? `openai:${appConfig.codegen?.model ?? "gpt-5.1-codex-mini"}` : "local-template"
+      provider: this.openai ? `openai:${appConfig.codegen?.model ?? "gpt-5.4"}` : "local-template"
     };
 
     await this.writeBundle(widget, bundle, payload);
@@ -367,7 +367,7 @@ export class WidgetService {
 
   async generateWithOpenAI({ appConfig, domain, panel, run }) {
     const response = await this.openai.responses.create({
-      model: appConfig.codegen?.model ?? "gpt-5.1-codex-mini",
+      model: appConfig.codegen?.model ?? "gpt-5.4",
       reasoning: {
         effort: appConfig.codegen?.reasoningEffort ?? "medium"
       },
