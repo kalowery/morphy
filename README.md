@@ -35,7 +35,7 @@ That dataset includes signals such as:
 - SMART/storage health
 - job and workload correlation signals
 
-The domain scaffolding for that dataset lives in [data/domains/hpcfund-cluster-observability.json](/Users/klowery/morphy/data/domains/hpcfund-cluster-observability.json).
+The domain scaffolding for that dataset lives in [data/domains/hpcfund-cluster-observability.json](data/domains/hpcfund-cluster-observability.json).
 
 ## Architecture
 
@@ -66,7 +66,7 @@ This scaffolding gives the UI a dependable starting shape even before any analys
 
 ### Server-Side Agent Runtime
 
-The server runtime in [src/services/agent-runtime.js](/Users/klowery/morphy/src/services/agent-runtime.js) is responsible for:
+The server runtime in [src/services/agent-runtime.js](src/services/agent-runtime.js) is responsible for:
 
 - gathering datasource preview context
 - planning the workspace
@@ -78,7 +78,7 @@ If `OPENAI_API_KEY` is present, Morphy uses OpenAI through the Node SDK. If no k
 
 ### Shared Refresh Model
 
-Morphy no longer assumes that every browser should kick off its own analysis work. Instead, a background coordinator in [src/services/refresh-coordinator.js](/Users/klowery/morphy/src/services/refresh-coordinator.js) refreshes shared state on a cadence.
+Morphy no longer assumes that every browser should kick off its own analysis work. Instead, a background coordinator in [src/services/refresh-coordinator.js](src/services/refresh-coordinator.js) refreshes shared state on a cadence.
 
 That shared refresh loop:
 
@@ -169,7 +169,7 @@ Morphy currently supports preview adapters for:
 - VictoriaMetrics-compatible time-series endpoints
 - relational sample-row stubs
 
-The current VictoriaMetrics datasource example is in [config/data-sources.json](/Users/klowery/morphy/config/data-sources.json).
+The current VictoriaMetrics datasource example is in [config/data-sources.json](config/data-sources.json).
 
 For historical datasets, explicit time windows matter. Without `start`, `end`, and an evaluation time, a valid endpoint may appear empty if the data is not current.
 
@@ -201,14 +201,14 @@ http://127.0.0.1:3000
 
 ## Key Files
 
-- [src/server.js](/Users/klowery/morphy/src/server.js): Express app, APIs, SSE, generated widget serving
-- [src/services/agent-runtime.js](/Users/klowery/morphy/src/services/agent-runtime.js): planning and analysis orchestration
-- [src/services/refresh-coordinator.js](/Users/klowery/morphy/src/services/refresh-coordinator.js): shared refresh loop
-- [src/services/widget-service.js](/Users/klowery/morphy/src/services/widget-service.js): widget bundle generation and serving
-- [src/services/data-sources.js](/Users/klowery/morphy/src/services/data-sources.js): datasource previews and VictoriaMetrics access
-- [src/services/config-store.js](/Users/klowery/morphy/src/services/config-store.js): persisted config and runtime state
-- [public/app.js](/Users/klowery/morphy/public/app.js): client-side workspace rendering and event handling
-- [public/runtime/widget-bridge.js](/Users/klowery/morphy/public/runtime/widget-bridge.js): iframe bridge for generated widgets
+- [src/server.js](src/server.js): Express app, APIs, SSE, generated widget serving
+- [src/services/agent-runtime.js](src/services/agent-runtime.js): planning and analysis orchestration
+- [src/services/refresh-coordinator.js](src/services/refresh-coordinator.js): shared refresh loop
+- [src/services/widget-service.js](src/services/widget-service.js): widget bundle generation and serving
+- [src/services/data-sources.js](src/services/data-sources.js): datasource previews and VictoriaMetrics access
+- [src/services/config-store.js](src/services/config-store.js): persisted config and runtime state
+- [public/app.js](public/app.js): client-side workspace rendering and event handling
+- [public/runtime/widget-bridge.js](public/runtime/widget-bridge.js): iframe bridge for generated widgets
 
 ## Current Limitations
 
