@@ -1,0 +1,43 @@
+[
+  {
+    "hostname": "chi-gpu-001",
+    "role": "gpu-node",
+    "cluster": "training-a",
+    "rack": "r12",
+    "status": "degraded",
+    "cpu_load": 0.92,
+    "memory_pressure": 0.88,
+    "disk_pressure": 0.31
+  },
+  {
+    "hostname": "chi-gpu-002",
+    "role": "gpu-node",
+    "cluster": "training-a",
+    "rack": "r12",
+    "status": "healthy",
+    "cpu_load": 0.63,
+    "memory_pressure": 0.51,
+    "disk_pressure": 0.19
+  },
+  {
+    "hostname": "chi-login-001",
+    "role": "login",
+    "cluster": "training-a",
+    "rack": "r03",
+    "status": "healthy",
+    "cpu_load": 0.21,
+    "memory_pressure": 0.32,
+    "disk_pressure": 0.1
+  },
+  {
+    "hostname": "dal-storage-017",
+    "role": "storage",
+    "cluster": "analytics-b",
+    "rack": "r44",
+    "status": "warning",
+    "cpu_load": 0.54,
+    "memory_pressure": 0.79,
+    "disk_pressure": 0.73
+  }
+]
+

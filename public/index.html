@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Morphy</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="backdrop backdrop-one"></div>
+    <div class="backdrop backdrop-two"></div>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">M</div>
+          <div>
+            <p class="eyebrow">Adaptive Analytics</p>
+            <h1 id="app-name">Morphy</h1>
+          </div>
+        </div>
+
+        <section class="panel chrome">
+          <p class="section-label">Domains</p>
+          <div id="domain-list" class="domain-list"></div>
+        </section>
+
+        <section class="panel chrome">
+          <details class="sidebar-section" open>
+            <summary class="sidebar-toggle">
+              <span>
+                <p class="section-label">Runtime</p>
+                <h3>Agent Status</h3>
+              </span>
+            </summary>
+            <div id="agent-status" class="agent-status sidebar-body"></div>
+          </details>
+        </section>
+
+        <section class="panel chrome">
+          <details class="sidebar-section">
+            <summary class="sidebar-toggle">
+              <span>
+                <p class="section-label">Data Sources</p>
+                <h3>Source Preview</h3>
+              </span>
+            </summary>
+            <div id="source-preview-list" class="source-preview-list sidebar-body"></div>
+          </details>
+        </section>
+      </aside>
+
+      <main class="main">
+        <section class="hero chrome">
+          <div>
+            <p class="eyebrow">Domain-Specific Front Ends</p>
+            <h2 id="domain-name">Select a domain</h2>
+            <p id="domain-description" class="lede">Upload or generate a domain description to project a specialized analytics UI.</p>
+          </div>
+          <div class="hero-actions">
+            <div id="domain-chip" class="domain-chip">No domain</div>
+            <button id="studio-toggle-button" class="ghost-button" type="button">Studio</button>
+            <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <div class="column wide">
+            <section class="panel chrome">
+              <div class="section-header workspace-header">
+                <div>
+                  <p class="section-label">Analytic Panels</p>
+                  <h3>Focused Workspace</h3>
+                </div>
+                <p class="hint">Keep one panel in focus and pull in the rest only when needed.</p>
+              </div>
+              <div class="workspace-focus">
+                <nav id="panel-rail" class="panel-rail" aria-label="Panel selector"></nav>
+                <div id="panel-stage" class="panel-stage"></div>
+              </div>
+            </section>
+
+            <section class="panel chrome collapsible-panel">
+              <details id="recent-runs-section" class="content-section">
+                <summary class="section-toggle">
+                  <div>
+                    <p class="section-label">Recent Runs</p>
+                    <h3>Live Output</h3>
+                  </div>
+                  <p class="hint">Expand for recent results and background completion context.</p>
+                </summary>
+                <div class="section-body">
+                  <div id="run-list" class="run-list"></div>
+                </div>
+              </details>
+            </section>
+          </div>
+
+        </section>
+      </main>
+    </div>
+
+    <div id="studio-overlay" class="studio-overlay" hidden></div>
+    <aside id="studio-drawer" class="studio-drawer" hidden aria-hidden="true">
+      <div class="studio-drawer-header">
+        <div>
+          <p class="section-label">Studio</p>
+          <h2>Domain And Source Config</h2>
+        </div>
+        <button id="studio-close-button" class="ghost-button" type="button">Close</button>
+      </div>
+      <div class="studio-drawer-body stack">
+        <section class="panel chrome">
+          <div class="section-header">
+            <div>
+              <p class="section-label">Generate Domain</p>
+              <h3>Prompt to Config</h3>
+            </div>
+          </div>
+          <form id="domain-form" class="stack">
+            <textarea id="domain-prompt" rows="10" placeholder="Describe the domain, the user personas, the data sources, and the types of analyses the agent should emphasize."></textarea>
+            <button class="primary-button" type="submit">Create Domain</button>
+          </form>
+        </section>
+
+        <section class="panel chrome">
+          <div class="section-header">
+            <div>
+              <p class="section-label">Add Data Source</p>
+              <h3>Config Registry</h3>
+            </div>
+          </div>
+          <form id="source-form" class="stack compact">
+            <input id="source-id" type="text" placeholder="Source ID" required>
+            <input id="source-name" type="text" placeholder="Display name" required>
+            <select id="source-type">
+              <option value="json-file">JSON File</option>
+              <option value="victoria-metrics">VictoriaMetrics</option>
+              <option value="relational">Relational</option>
+            </select>
+            <textarea id="source-config" rows="7" placeholder='{"path":"data/samples/example.json"}'></textarea>
+            <button class="primary-button" type="submit">Save Source</button>
+          </form>
+        </section>
+      </div>
+    </aside>
+
+    <template id="panel-card-template">
+      <article class="analytics-card">
+        <div class="card-header">
+          <div>
+            <p class="section-label panel-kicker"></p>
+            <h3 class="panel-title"></h3>
+          </div>
+          <button class="ghost-button run-button" type="button">Run Analysis</button>
+        </div>
+        <p class="panel-summary"></p>
+        <div class="chart-shell">
+          <div class="chart-title"></div>
+          <div class="chart-target"></div>
+        </div>
+        <div class="report-shell"></div>
+      </article>
+    </template>
+
+    <template id="run-card-template">
+      <article class="run-card">
+        <div class="run-meta">
+          <div>
+            <p class="section-label run-domain"></p>
+            <h3 class="run-title"></h3>
+          </div>
+          <span class="status-pill"></span>
+        </div>
+        <div class="run-report"></div>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

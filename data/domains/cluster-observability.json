@@ -1,0 +1,35 @@
+{
+  "id": "cluster-observability",
+  "name": "Cluster Observability",
+  "description": "Operational monitoring and anomaly triage for large-scale compute clusters.",
+  "color": "#6ee7b7",
+  "icon": "CO",
+  "dataSources": [
+    "cluster-inventory",
+    "victoria-cluster"
+  ],
+  "panels": [
+    {
+      "id": "fleet-health",
+      "title": "Fleet Health",
+      "summary": "Rank clusters and hosts by operational risk and stability trends.",
+      "analysisPrompt": "Assess fleet-wide health, identify the highest-risk hosts, and explain what should be investigated first.",
+      "chartPreference": "bar"
+    },
+    {
+      "id": "capacity-pressure",
+      "title": "Capacity Pressure",
+      "summary": "Highlight CPU, memory, and disk hotspots that are likely to affect users.",
+      "analysisPrompt": "Explain which hosts or clusters are under the highest resource pressure and suggest prioritization for operators.",
+      "chartPreference": "line"
+    },
+    {
+      "id": "operator-brief",
+      "title": "Operator Brief",
+      "summary": "Produce a concise operational briefing suitable for shift handoff.",
+      "analysisPrompt": "Generate an operator handoff brief with urgent items, medium-term watch items, and any confidence caveats.",
+      "chartPreference": "donut"
+    }
+  ]
+}
+

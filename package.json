@@ -1,0 +1,17 @@
+{
+  "name": "morphy",
+  "version": "0.1.0",
+  "description": "Config-driven analytical web app with an embedded server-side agent runtime.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "openai": "^6.2.0"
+  }
+}
+

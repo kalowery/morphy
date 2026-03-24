@@ -1,0 +1,19 @@
+{
+  "app": {
+    "name": "Morphy",
+    "tagline": "Adaptive analytics for heterogeneous data domains",
+    "refreshIntervalMs": 15000,
+    "listenPort": 3000,
+    "defaultDomainId": "hpcfund-cluster-observability"
+  },
+  "agent": {
+    "model": "gpt-5.2",
+    "reasoningEffort": "medium",
+    "allowBackground": true
+  },
+  "codegen": {
+    "model": "gpt-5.1-codex-mini",
+    "reasoningEffort": "medium",
+    "sandboxMode": "iframe"
+  }
+}

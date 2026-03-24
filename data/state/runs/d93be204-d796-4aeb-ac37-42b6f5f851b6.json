@@ -1,0 +1,124 @@
+{
+  "id": "d93be204-d796-4aeb-ac37-42b6f5f851b6",
+  "domainId": "cluster-observability",
+  "panelId": "fleet-health",
+  "panelTitle": "Fleet Health",
+  "status": "completed",
+  "createdAt": "2026-03-24T18:42:53.016Z",
+  "updatedAt": "2026-03-24T18:42:53.018Z",
+  "context": {
+    "domainId": "cluster-observability",
+    "domainName": "Cluster Observability",
+    "previewCount": 2,
+    "previews": [
+      {
+        "sourceId": "cluster-inventory",
+        "sourceType": "json-file",
+        "sourceName": "Cluster Inventory Snapshot",
+        "status": "ready",
+        "detail": {
+          "kind": "rows",
+          "rowCount": 4,
+          "metrics": {
+            "cpu_load": {
+              "min": 0.21,
+              "max": 0.92,
+              "average": 0.575
+            },
+            "memory_pressure": {
+              "min": 0.32,
+              "max": 0.88,
+              "average": 0.625
+            },
+            "disk_pressure": {
+              "min": 0.1,
+              "max": 0.73,
+              "average": 0.333
+            }
+          },
+          "sample": [
+            {
+              "hostname": "chi-gpu-001",
+              "role": "gpu-node",
+              "cluster": "training-a",
+              "rack": "r12",
+              "status": "degraded",
+              "cpu_load": 0.92,
+              "memory_pressure": 0.88,
+              "disk_pressure": 0.31
+            },
+            {
+              "hostname": "chi-gpu-002",
+              "role": "gpu-node",
+              "cluster": "training-a",
+              "rack": "r12",
+              "status": "healthy",
+              "cpu_load": 0.63,
+              "memory_pressure": 0.51,
+              "disk_pressure": 0.19
+            },
+            {
+              "hostname": "chi-login-001",
+              "role": "login",
+              "cluster": "training-a",
+              "rack": "r03",
+              "status": "healthy",
+              "cpu_load": 0.21,
+              "memory_pressure": 0.32,
+              "disk_pressure": 0.1
+            },
+            {
+              "hostname": "dal-storage-017",
+              "role": "storage",
+              "cluster": "analytics-b",
+              "rack": "r44",
+              "status": "warning",
+              "cpu_load": 0.54,
+              "memory_pressure": 0.79,
+              "disk_pressure": 0.73
+            }
+          ]
+        }
+      },
+      {
+        "sourceId": "victoria-cluster",
+        "sourceType": "victoria-metrics",
+        "sourceName": "VictoriaMetrics Cluster",
+        "status": "warning",
+        "detail": {
+          "message": "fetch failed",
+          "queryName": "hostCpuHotspots"
+        }
+      }
+    ]
+  },
+  "report": {
+    "narrative": [
+      "Fleet Health is using 1 ready data source(s) and 1 warning source(s).",
+      "Sources needing attention: VictoriaMetrics Cluster.",
+      "Key metrics in the sample include cpu_load avg 0.575, memory_pressure avg 0.625, disk_pressure avg 0.333."
+    ],
+    "highlights": [
+      "Primary source: Cluster Inventory Snapshot",
+      "fetch failed"
+    ],
+    "chart": {
+      "type": "bar",
+      "title": "Fleet Health Snapshot",
+      "labels": [
+        "cpu_load",
+        "memory_pressure",
+        "disk_pressure"
+      ],
+      "values": [
+        0.575,
+        0.625,
+        0.333
+      ]
+    }
+  },
+  "provider": "local-fallback",
+  "remoteResponseId": null,
+  "widgetId": "47411653-a473-4219-bc03-555a1bc44c7a",
+  "widgetUrl": "/generated/widgets/47411653-a473-4219-bc03-555a1bc44c7a"
+}

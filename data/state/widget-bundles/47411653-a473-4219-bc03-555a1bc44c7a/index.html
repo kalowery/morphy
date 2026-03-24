@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fleet Health Widget</title>
+    <link rel="stylesheet" href="/generated/widgets/47411653-a473-4219-bc03-555a1bc44c7a/files/styles.css">
+  </head>
+  <body>
+    <div id="app">
+    <section class="widget-shell">
+      <div class="hero-band">
+        <p class="eyebrow">Cluster Observability</p>
+        <h1>Fleet Health</h1>
+        <p class="summary">Rank clusters and hosts by operational risk and stability trends.</p>
+      </div>
+      <div class="widget-grid">
+        <section class="widget-card">
+          <p class="eyebrow">Signals</p>
+          <div id="metric-tape" class="metric-tape"></div>
+        </section>
+        <section class="widget-card">
+          <p class="eyebrow">Visualization</p>
+          <div id="viz-target" class="viz-target"></div>
+        </section>
+      </div>
+      <section class="widget-card">
+        <p class="eyebrow">Narrative</p>
+        <div id="narrative-target" class="narrative-target"></div>
+      </section>
+    </section>
+  </div>
+    <script src="/runtime/widget-bridge.js"></script>
+    <script type="module" src="/generated/widgets/47411653-a473-4219-bc03-555a1bc44c7a/files/widget.js"></script>
+  </body>
+</html>

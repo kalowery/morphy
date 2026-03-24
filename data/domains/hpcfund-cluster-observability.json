@@ -1,0 +1,54 @@
+{
+  "id": "hpcfund-cluster-observability",
+  "name": "HPCFund Cluster Observability",
+  "description": "Historical observability domain for the HPCFund GPU cluster, combining ROCm telemetry, Slurm scheduler state, node-exporter metrics, InfiniBand health, and job-to-node correlation from March 2026.",
+  "color": "#8df0c6",
+  "icon": "HF",
+  "dataSources": [
+    "victoria-cluster"
+  ],
+  "panels": [
+    {
+      "id": "fleet-health",
+      "title": "Fleet Health",
+      "summary": "Rank hosts by operational risk using node state, SMART, InfiniBand, scheduler, and GPU fault signals across the historical window.",
+      "analysisPrompt": "Using the VictoriaMetrics historical window, assess overall cluster health for hpcfund. Identify the highest-risk hosts, explain whether the dominant risks are scheduler, hardware, fabric, or thermal, and call out where evidence is weak versus strong.",
+      "chartPreference": "bar"
+    },
+    {
+      "id": "scheduler-pressure",
+      "title": "Scheduler Pressure",
+      "summary": "Explain partition saturation, pending demand, and where the queue is likely to be constraining users.",
+      "analysisPrompt": "Analyze scheduler pressure by partition. Explain which GPU families are saturated, where pending jobs are concentrated, and what that implies about capacity bottlenecks or scheduling imbalance.",
+      "chartPreference": "bar"
+    },
+    {
+      "id": "gpu-hotspots",
+      "title": "GPU Hotspots",
+      "summary": "Focus on ROCm temperature, utilization, VRAM pressure, and power signals to find the most stressed accelerators.",
+      "analysisPrompt": "Find the hottest or most stressed GPUs in the historical window. Correlate temperature, GPU activity, and any relevant host context, and explain which accelerators deserve investigation first.",
+      "chartPreference": "line"
+    },
+    {
+      "id": "fabric-storage",
+      "title": "Fabric And Storage",
+      "summary": "Surface InfiniBand anomalies and SMART health issues that can affect throughput or reliability.",
+      "analysisPrompt": "Analyze InfiniBand and storage-health signals. Identify nodes with unusual fabric error behavior or SMART failures, explain likely operator impact, and separate probable noise from meaningful degradation.",
+      "chartPreference": "bar"
+    },
+    {
+      "id": "job-correlation",
+      "title": "Job Correlation",
+      "summary": "Connect stressed nodes back to partitions, users, and jobs so operators can understand what workload context explains the telemetry.",
+      "analysisPrompt": "Use scheduler and job metadata to connect hot or problematic nodes to likely workload causes. Summarize which partitions and users appear associated with the most stressed parts of the cluster, and note any ambiguity in the evidence.",
+      "chartPreference": "donut"
+    },
+    {
+      "id": "operator-brief",
+      "title": "Operator Brief",
+      "summary": "Produce a shift-handoff summary with the most important actions, watch items, and notable evidence.",
+      "analysisPrompt": "Generate a concise cluster-operations handoff brief for hpcfund. Include urgent actions, watch items, scheduler pressure summary, hardware/fabric notes, and confidence caveats given that this dataset is historical rather than live.",
+      "chartPreference": "donut"
+    }
+  ]
+}

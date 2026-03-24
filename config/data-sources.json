@@ -1,0 +1,49 @@
+[
+  {
+    "id": "cluster-inventory",
+    "name": "Cluster Inventory Snapshot",
+    "type": "json-file",
+    "description": "Local JSON inventory exported from an asset system.",
+    "path": "data/samples/cluster-inventory.json"
+  },
+  {
+    "id": "victoria-cluster",
+    "name": "VictoriaMetrics HPCFund Cluster",
+    "type": "victoria-metrics",
+    "description": "Historical March 2026 cluster observability dataset for GPU compute nodes, Slurm state, InfiniBand, and ROCm telemetry.",
+    "baseUrl": "http://127.0.0.1:9090",
+    "defaultEvaluationTime": "2026-03-24T23:59:59Z",
+    "start": "2026-03-01T00:00:00Z",
+    "end": "2026-03-24T23:59:59Z",
+    "queries": {
+      "instrumentedHostCount": "count(count by(instance) (last_over_time(omnistat_info[30d])))",
+      "pendingJobsByPartition": "sort_desc(last_over_time(slurm_partition_jobs_pending[30d]))",
+      "partitionCpuSaturation": "sort_desc(last_over_time(slurm_partition_cpus_allocated[30d]) / last_over_time(slurm_partition_cpus_total[30d]))",
+      "hotGpusByTemperature": "topk(10, max by(instance,card) (last_over_time(rocm_temperature_celsius[7d])))",
+      "ibErrorScoreByNode": "sort_desc(topk(15, sum by(instance) (last_over_time(node_infiniband_port_errors_received_total[30d]) + last_over_time(node_infiniband_port_discards_transmitted_total[30d]) + last_over_time(node_infiniband_link_downed_total[30d]) + last_over_time(node_infiniband_link_error_recovery_total[30d]))))",
+      "gpuRasUncorrectableByNode": "sort_desc(topk(15, sum by(instance) (last_over_time(rocm_ras_umc_uncorrectable_count[30d]) + last_over_time(rocm_ras_gfx_uncorrectable_count[30d]) + last_over_time(rocm_ras_mmhub_uncorrectable_count[30d]) + last_over_time(rocm_ras_sdma_uncorrectable_count[30d]) + last_over_time(rocm_ras_hdp_uncorrectable_count[30d]) + last_over_time(rocm_ras_pcie_bif_uncorrectable_count[30d]) + last_over_time(rocm_ras_xgmi_wafl_uncorrectable_count[30d]))))",
+      "smartFailures": "sort_desc(last_over_time(smartmon_device_smart_healthy[30d]) == 0)",
+      "slurmNodeHealthScore": "topk(10, last_over_time(slurm_nodes_down[30d]) + last_over_time(slurm_nodes_drain[30d]) + last_over_time(slurm_nodes_fail[30d]) + last_over_time(slurm_nodes_err[30d]))"
+    }
+  },
+  {
+    "id": "warehouse-kpis",
+    "name": "Warehouse KPI Feed",
+    "type": "relational",
+    "description": "Relational summary source stub; replace sample rows with a live driver.",
+    "sampleRows": [
+      {
+        "site": "CHI-1",
+        "active_orders": 1412,
+        "sla_risk_orders": 112,
+        "pick_rate_per_hour": 183
+      },
+      {
+        "site": "DAL-2",
+        "active_orders": 981,
+        "sla_risk_orders": 37,
+        "pick_rate_per_hour": 205
+      }
+    ]
+  }
+]
