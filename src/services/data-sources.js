@@ -2,6 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { paths } from "./config-store.js";
 
+const noopLogger = {
+  trace() {},
+  debug() {},
+  info() {},
+  warn() {},
+  error() {}
+};
+
 function relativeToRoot(candidatePath) {
   if (path.isAbsolute(candidatePath)) {
     return candidatePath;
@@ -58,7 +66,7 @@ function summarizeRows(rows) {
 }
 
 function summarizeVectorResult(result) {
-  return result.slice(0, 8).map((entry) => ({
+  return result.slice(0, 12).map((entry) => ({
     metric: entry.metric ?? {},
     value: Array.isArray(entry.value) ? entry.value[1] : null
   }));
@@ -85,16 +93,32 @@ function buildVictoriaQueryUrl(source, queryExpression) {
   return url;
 }
 
-async function executeVictoriaQuery(source, queryName, queryExpression) {
+async function executeVictoriaQuery(source, queryName, queryExpression, logger = noopLogger) {
   const url = buildVictoriaQueryUrl(source, queryExpression);
+  logger.debug("Executing VictoriaMetrics query", {
+    sourceId: source.id,
+    queryName,
+    url: url.toString()
+  }, "datasources");
   const response = await fetch(url, { headers: { accept: "application/json" } });
 
   if (!response.ok) {
+    logger.warn("VictoriaMetrics query failed", {
+      sourceId: source.id,
+      queryName,
+      status: response.status
+    }, "datasources");
     throw new Error(`VictoriaMetrics returned ${response.status}`);
   }
 
   const payload = await response.json();
   const result = Array.isArray(payload.data?.result) ? payload.data.result : [];
+  logger.debug("VictoriaMetrics query completed", {
+    sourceId: source.id,
+    queryName,
+    resultType: payload.data?.resultType ?? "unknown",
+    resultCount: result.length
+  }, "datasources");
 
   return {
     queryName,
@@ -104,9 +128,13 @@ async function executeVictoriaQuery(source, queryName, queryExpression) {
   };
 }
 
-async function previewJsonFile(source) {
+async function previewJsonFile(source, logger = noopLogger) {
   try {
     const fullPath = relativeToRoot(source.path);
+    logger.debug("Previewing JSON source", {
+      sourceId: source.id,
+      path: fullPath
+    }, "datasources");
     const raw = await fs.readFile(fullPath, "utf8");
     const payload = JSON.parse(raw);
 
@@ -118,6 +146,10 @@ async function previewJsonFile(source) {
       detail: summarizeRows(payload)
     };
   } catch (error) {
+    logger.warn("JSON source preview failed", {
+      sourceId: source.id,
+      error: error.message
+    }, "datasources");
     return {
       sourceId: source.id,
       sourceType: source.type,
@@ -130,7 +162,7 @@ async function previewJsonFile(source) {
   }
 }
 
-async function previewVictoriaMetrics(source) {
+async function previewVictoriaMetrics(source, logger = noopLogger) {
   if (!source.baseUrl) {
     return {
       sourceId: source.id,
@@ -159,12 +191,22 @@ async function previewVictoriaMetrics(source) {
   }
 
   try {
-    const previewQueries = queryEntries.slice(0, Math.min(4, queryEntries.length));
+    const configuredPreviewNames = Array.isArray(source.previewQueryNames)
+      ? source.previewQueryNames.filter((queryName) => typeof queryName === "string" && queries[queryName])
+      : [];
+    const previewQueries = configuredPreviewNames.length
+      ? configuredPreviewNames.map((queryName) => [queryName, queries[queryName]])
+      : queryEntries.slice(0, Math.min(4, queryEntries.length));
     const queryResults = await Promise.all(
       previewQueries.map(([queryName, queryExpression]) =>
-        executeVictoriaQuery(source, queryName, queryExpression)
+        executeVictoriaQuery(source, queryName, queryExpression, logger)
       )
     );
+    logger.info("VictoriaMetrics preview ready", {
+      sourceId: source.id,
+      queryNames: previewQueries.map(([queryName]) => queryName),
+      queryCount: queryResults.length
+    }, "datasources");
 
     return {
       sourceId: source.id,
@@ -181,6 +223,10 @@ async function previewVictoriaMetrics(source) {
       }
     };
   } catch (error) {
+    logger.warn("VictoriaMetrics preview failed", {
+      sourceId: source.id,
+      error: error.message
+    }, "datasources");
     return {
       sourceId: source.id,
       sourceType: source.type,
@@ -193,7 +239,11 @@ async function previewVictoriaMetrics(source) {
   }
 }
 
-async function previewRelational(source) {
+async function previewRelational(source, logger = noopLogger) {
+  logger.debug("Previewing relational source", {
+    sourceId: source.id,
+    sampleRowCount: Array.isArray(source.sampleRows) ? source.sampleRows.length : 0
+  }, "datasources");
   return {
     sourceId: source.id,
     sourceType: source.type,
@@ -206,15 +256,20 @@ async function previewRelational(source) {
   };
 }
 
-export async function previewSource(source) {
+export async function previewSource(source, options = {}) {
+  const logger = options.logger ?? noopLogger;
   switch (source.type) {
     case "json-file":
-      return previewJsonFile(source);
+      return previewJsonFile(source, logger);
     case "victoria-metrics":
-      return previewVictoriaMetrics(source);
+      return previewVictoriaMetrics(source, logger);
     case "relational":
-      return previewRelational(source);
+      return previewRelational(source, logger);
     default:
+      logger.warn("Unsupported source type", {
+        sourceId: source.id,
+        sourceType: source.type
+      }, "datasources");
       return {
         sourceId: source.id,
         sourceType: source.type,
@@ -227,9 +282,14 @@ export async function previewSource(source) {
   }
 }
 
-export async function gatherDomainContext(domain, dataSources) {
+export async function gatherDomainContext(domain, dataSources, options = {}) {
+  const logger = options.logger ?? noopLogger;
   const applicableSources = dataSources.filter((source) => domain.dataSources.includes(source.id));
-  const previews = await Promise.all(applicableSources.map((source) => previewSource(source)));
+  logger.debug("Gathering domain context", {
+    domainId: domain.id,
+    sourceIds: applicableSources.map((source) => source.id)
+  }, "datasources");
+  const previews = await Promise.all(applicableSources.map((source) => previewSource(source, { logger })));
 
   return {
     domainId: domain.id,

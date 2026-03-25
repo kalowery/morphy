@@ -44,6 +44,13 @@
       "chartPreference": "donut"
     },
     {
+      "id": "job-explorer",
+      "title": "Job Explorer",
+      "summary": "Investigate specific Slurm jobs and infer how GPU utilization, occupancy, and VRAM demand changed over the job lifetime or visible window.",
+      "analysisPrompt": "Use rmsjob_info and the ROCm telemetry series to build a job-centric view. Identify specific jobs that can be tied to nodes with strong GPU demand signals, summarize which users and partitions they belong to, and explain how GPU utilization, compute-unit occupancy, VRAM use, power, or thermal behavior appear to fluctuate over the visible window. Be explicit about when attribution is direct versus inferred from node-level overlap.",
+      "chartPreference": "line"
+    },
+    {
       "id": "operator-brief",
       "title": "Operator Brief",
       "summary": "Produce a shift-handoff summary with the most important actions, watch items, and notable evidence.",

@@ -202,7 +202,9 @@ function normalizeWorkspacePlan(domain, parsed, preferredPanelId = null) {
   const validPanelIds = new Set(panelIds(domain));
   const visiblePanelIds = (Array.isArray(parsed.visiblePanelIds) ? parsed.visiblePanelIds : [])
     .filter((panelId) => validPanelIds.has(panelId));
-  const nextVisiblePanelIds = visiblePanelIds.length ? visiblePanelIds : panelIds(domain);
+  const nextVisiblePanelIds = visiblePanelIds.length
+    ? [...visiblePanelIds, ...panelIds(domain).filter((panelId) => !visiblePanelIds.includes(panelId))]
+    : panelIds(domain);
   const focusPanelId = validPanelIds.has(parsed.focusPanelId)
     ? parsed.focusPanelId
     : preferredPanelId && validPanelIds.has(preferredPanelId)
@@ -283,6 +285,7 @@ function buildFallbackWorkspacePlan(domain, context, recentRuns = [], preferredP
     "fleet-health",
     "scheduler-pressure",
     "gpu-hotspots",
+    "job-explorer",
     "fabric-storage",
     "job-correlation",
     "operator-brief"
@@ -335,20 +338,36 @@ function isInProgress(run) {
 }
 
 export class AgentRuntime {
-  constructor({ configStore, eventBus, widgetService }) {
+  constructor({ configStore, eventBus, widgetService, logger }) {
     this.configStore = configStore;
     this.eventBus = eventBus;
     this.widgetService = widgetService;
+    this.logger = logger ?? {
+      trace() {},
+      debug() {},
+      info() {},
+      warn() {},
+      error() {}
+    };
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
   }
 
   async generateDomain(prompt) {
     const dataSources = await this.configStore.getDataSources();
     const appConfig = await this.configStore.getAppConfig();
+    this.logger.info("Generating domain", {
+      promptLength: prompt.length,
+      dataSourceIds: dataSources.map((source) => source.id),
+      provider: this.openai ? "openai" : "fallback"
+    }, "analysis");
 
     if (!this.openai) {
       const domain = buildFallbackDomain(prompt, dataSources);
       await this.configStore.saveDomain(domain);
+      this.logger.info("Generated fallback domain", {
+        domainId: domain.id,
+        panelCount: domain.panels.length
+      }, "analysis");
       return domain;
     }
 
@@ -389,6 +408,10 @@ export class AgentRuntime {
 
     const domain = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
     await this.configStore.saveDomain(domain);
+    this.logger.info("Generated domain with OpenAI", {
+      domainId: domain.id,
+      panelCount: domain.panels.length
+    }, "analysis");
     return domain;
   }
 
@@ -404,13 +427,26 @@ export class AgentRuntime {
       throw new Error(`Unknown domain: ${domainId}`);
     }
 
-    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources));
+    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
     const recentRuns = runs.filter((run) => run.domainId === domainId).slice(0, 8);
+    this.logger.info("Planning workspace", {
+      domainId,
+      preferredPanelId,
+      reason,
+      recentRunCount: recentRuns.length,
+      previewCount: context.previewCount,
+      provider: this.openai ? "openai" : "fallback"
+    }, "planner");
 
     if (!this.openai) {
       const workspacePlan = buildFallbackWorkspacePlan(domain, context, recentRuns, preferredPanelId);
       await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
       this.eventBus.emit("workspace.update", workspacePlan);
+      this.logger.debug("Built fallback workspace plan", {
+        domainId,
+        focusPanelId: workspacePlan.focusPanelId,
+        visiblePanelIds: workspacePlan.visiblePanelIds
+      }, "planner");
       return workspacePlan;
     }
 
@@ -454,6 +490,12 @@ export class AgentRuntime {
     const workspacePlan = normalizeWorkspacePlan(domain, parsed, preferredPanelId);
     await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
     this.eventBus.emit("workspace.update", workspacePlan);
+    this.logger.info("Workspace plan saved", {
+      domainId,
+      focusPanelId: workspacePlan.focusPanelId,
+      visiblePanelIds: workspacePlan.visiblePanelIds,
+      layoutMode: workspacePlan.layoutMode
+    }, "planner");
     return workspacePlan;
   }
 
@@ -473,18 +515,42 @@ export class AgentRuntime {
     const runs = await this.configStore.listRuns();
     const relevantRuns = runs.filter((run) => run.domainId === domainId && run.panelId === panelId);
     const latestRun = relevantRuns[0] ?? null;
+    this.logger.debug("Ensuring panel run", {
+      domainId,
+      panelId,
+      force,
+      freshnessMs,
+      trigger,
+      latestRunId: latestRun?.id ?? null,
+      latestRunStatus: latestRun?.status ?? null
+    }, "analysis");
 
     if (latestRun?.status === "in_progress") {
       const syncedRun = await this.syncRun(latestRun.id);
       if (syncedRun?.status === "in_progress") {
+        this.logger.debug("Reusing in-progress panel run", {
+          domainId,
+          panelId,
+          runId: syncedRun.id
+        }, "analysis");
         return syncedRun;
       }
       if (!force && syncedRun?.status === "completed" && Date.now() - new Date(syncedRun.updatedAt).getTime() <= freshnessMs) {
+        this.logger.debug("Reusing freshly completed run after sync", {
+          domainId,
+          panelId,
+          runId: syncedRun.id
+        }, "analysis");
         return syncedRun;
       }
     }
 
     if (!force && latestRun?.status === "completed" && Date.now() - new Date(latestRun.updatedAt).getTime() <= freshnessMs) {
+      this.logger.debug("Reusing fresh completed run", {
+        domainId,
+        panelId,
+        runId: latestRun.id
+      }, "analysis");
       return latestRun;
     }
 
@@ -514,7 +580,16 @@ export class AgentRuntime {
       throw new Error(`Unknown panel: ${panelId}`);
     }
 
-    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources));
+    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
+    this.logger.info("Starting panel analysis", {
+      domainId,
+      panelId,
+      panelTitle: panel.title,
+      trigger,
+      provider: this.openai ? "openai" : "fallback",
+      previewCount: context.previewCount,
+      focusPanelId: workspacePlan?.focusPanelId ?? null
+    }, "analysis");
     const run = {
       id: crypto.randomUUID(),
       domainId,
@@ -534,6 +609,11 @@ export class AgentRuntime {
 
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
+    this.logger.debug("Saved initial run state", {
+      runId: run.id,
+      status: run.status,
+      provider: run.provider
+    }, "analysis");
 
     if (!this.openai) {
       void this.generateWidgetForRun(run.id, domain, panel);
@@ -576,6 +656,13 @@ export class AgentRuntime {
     run.updatedAt = new Date().toISOString();
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
+    this.logger.info("OpenAI analysis response received", {
+      runId: run.id,
+      domainId,
+      panelId,
+      remoteResponseId: response.id,
+      status: run.status
+    }, "analysis");
 
     sessions[domainId] = {
       previousResponseId: response.id,
@@ -607,6 +694,11 @@ export class AgentRuntime {
     }
 
     const response = await this.openai.responses.retrieve(run.remoteResponseId);
+    this.logger.debug("Synced remote run state", {
+      runId,
+      remoteResponseId: run.remoteResponseId,
+      remoteStatus: response.status
+    }, "analysis");
 
     if (response.status === "completed") {
       await this.completeRun(runId, domain, panel, response);
@@ -619,6 +711,12 @@ export class AgentRuntime {
       run.error = response.error ?? `Response ended with status ${response.status}`;
       await this.configStore.saveRun(run);
       this.eventBus.emit("run.update", run);
+      this.logger.warn("Run failed during sync", {
+        runId,
+        remoteResponseId: run.remoteResponseId,
+        remoteStatus: response.status,
+        error: run.error
+      }, "analysis");
       return run;
     }
 
@@ -652,6 +750,11 @@ export class AgentRuntime {
     try {
       parsed = extractJson(response.output_text ?? JSON.stringify(response.output));
     } catch (error) {
+      this.logger.warn("Analysis response could not be parsed as JSON", {
+        runId,
+        panelId: panel.id,
+        error: error.message
+      }, "analysis");
       parsed = {
         narrative: ["The agent returned a non-JSON response, so the raw text has been wrapped."],
         highlights: [error.message],
@@ -669,6 +772,13 @@ export class AgentRuntime {
     run.updatedAt = new Date().toISOString();
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
+    this.logger.info("Run completed", {
+      runId,
+      domainId: run.domainId,
+      panelId: panel.id,
+      chartType: run.report.chart.type,
+      chartPointCount: run.report.chart.labels.length
+    }, "analysis");
     void this.generateWidgetForRun(run.id, domain, panel);
     void this.planWorkspace({ domainId: run.domainId, preferredPanelId: panel.id, reason: "analysis-complete" }).catch(() => {});
   }
@@ -679,11 +789,26 @@ export class AgentRuntime {
     }
 
     try {
+      this.logger.debug("Generating widget for run", {
+        runId: run.id,
+        domainId: domain.id,
+        panelId: panel.id
+      }, "widgets");
       const widget = await this.widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
+      this.logger.info("Widget attached to run", {
+        runId: run.id,
+        widgetId: widget.id,
+        panelId: panel.id
+      }, "widgets");
     } catch (error) {
       run.widgetError = error.message;
+      this.logger.warn("Widget generation failed", {
+        runId: run.id,
+        panelId: panel.id,
+        error: error.message
+      }, "widgets");
     }
   }
 
@@ -702,6 +827,9 @@ export class AgentRuntime {
 
   async reconcileRecentRuns(runs = []) {
     const pendingRuns = runs.filter((run) => isInProgress(run) && run.remoteResponseId);
+    this.logger.debug("Reconciling recent runs", {
+      pendingRunIds: pendingRuns.map((run) => run.id)
+    }, "analysis");
 
     await Promise.allSettled(
       pendingRuns.map(async (run) => {

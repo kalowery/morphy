@@ -8,23 +8,28 @@ import { previewSource } from "./services/data-sources.js";
 import { AgentRuntime } from "./services/agent-runtime.js";
 import { WidgetService } from "./services/widget-service.js";
 import { RefreshCoordinator } from "./services/refresh-coordinator.js";
+import { buildServerDiagnostics, createLogger } from "./lib/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export function createApp() {
+export async function createApp() {
   const app = express();
   const eventBus = new EventEmitter();
   const configStore = new ConfigStore();
-  const widgetService = new WidgetService({ configStore });
-  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService });
-  const refreshCoordinator = new RefreshCoordinator({ configStore, agentRuntime, eventBus });
+  const appConfig = await configStore.getAppConfig();
+  const diagnostics = buildServerDiagnostics(appConfig);
+  const logger = createLogger({ namespace: "server", diagnostics });
+  const widgetService = new WidgetService({ configStore, logger });
+  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService, logger });
+  const refreshCoordinator = new RefreshCoordinator({ configStore, agentRuntime, eventBus, logger });
 
   app.use(express.json({ limit: "1mb" }));
   app.use(express.static(path.join(__dirname, "..", "public")));
 
   app.get("/api/bootstrap", async (_request, response, next) => {
     try {
+      logger.debug("Handling bootstrap request", {}, "server");
       const [appConfig, dataSources, domains, runs, widgets, workspacePlans, liveState] = await Promise.all([
         configStore.getAppConfig(),
         configStore.getDataSources(),
@@ -37,16 +42,37 @@ export function createApp() {
 
       const sourcePreviews = liveState.sourcePreviews?.length
         ? liveState.sourcePreviews
-        : await Promise.all(dataSources.map((source) => previewSource(source)));
+        : await Promise.all(dataSources.map((source) => previewSource(source, { logger })));
       const snapshotRunIds = new Set(
         Object.values(liveState.domainSnapshots ?? {})
           .flatMap((snapshot) => Object.values(snapshot?.panelStatus ?? {}))
           .map((status) => status?.runId)
           .filter(Boolean)
       );
-      const recentRuns = runs.filter((run, index) => index < 12 || snapshotRunIds.has(run.id));
+      const latestWidgetRunIds = new Set();
+      const latestWidgetRunsByPanel = new Map();
+
+      for (const run of runs) {
+        if (!run.widgetId) {
+          continue;
+        }
+
+        const key = `${run.domainId}:${run.panelId}`;
+        if (!latestWidgetRunsByPanel.has(key)) {
+          latestWidgetRunsByPanel.set(key, run);
+          latestWidgetRunIds.add(run.id);
+        }
+      }
+
+      const recentRuns = runs.filter((run, index) => index < 12 || snapshotRunIds.has(run.id) || latestWidgetRunIds.has(run.id));
 
       void agentRuntime.reconcileRecentRuns(recentRuns);
+      logger.info("Bootstrap payload prepared", {
+        domainCount: domains.length,
+        runCount: recentRuns.length,
+        widgetCount: widgets.length,
+        sourcePreviewCount: sourcePreviews.length
+      }, "server");
 
       response.json({
         appConfig,
@@ -81,6 +107,10 @@ export function createApp() {
       const nextSources = current.filter((entry) => entry.id !== source.id);
       nextSources.push(source);
       await configStore.saveDataSources(nextSources);
+      logger.info("Saved data source", {
+        sourceId: source.id,
+        sourceType: source.type
+      }, "server");
       response.status(201).json(source);
     } catch (error) {
       next(error);
@@ -97,6 +127,10 @@ export function createApp() {
       }
 
       const domain = await agentRuntime.generateDomain(prompt);
+      logger.info("Domain generated via API", {
+        domainId: domain.id,
+        panelCount: domain.panels.length
+      }, "server");
       response.status(201).json(domain);
     } catch (error) {
       next(error);
@@ -113,6 +147,11 @@ export function createApp() {
       }
 
       const appConfig = await configStore.getAppConfig();
+      logger.info("Analysis run requested", {
+        domainId,
+        panelId,
+        force
+      }, "server");
       const run = await agentRuntime.ensurePanelRun({
         domainId,
         panelId,
@@ -135,6 +174,10 @@ export function createApp() {
         return;
       }
 
+      logger.info("Domain refresh requested", {
+        domainId,
+        force
+      }, "server");
       const snapshot = await refreshCoordinator.refreshDomain(domainId, {
         reason: force ? "manual-force" : "manual-refresh",
         force
@@ -154,6 +197,11 @@ export function createApp() {
         return;
       }
 
+      logger.info("Workspace plan requested", {
+        domainId,
+        preferredPanelId: preferredPanelId ?? null,
+        reason: reason ?? "manual-refresh"
+      }, "server");
       const workspacePlan = await agentRuntime.planWorkspace({
         domainId,
         preferredPanelId: preferredPanelId ?? null,
@@ -168,6 +216,7 @@ export function createApp() {
 
   app.get("/api/analysis/:runId", async (request, response, next) => {
     try {
+      logger.debug("Analysis status requested", { runId: request.params.runId }, "server");
       const run = await agentRuntime.syncRun(request.params.runId);
 
       if (!run) {
@@ -216,6 +265,12 @@ export function createApp() {
       run.updatedAt = new Date().toISOString();
       await configStore.saveRun(run);
       eventBus.emit("run.update", run);
+      logger.info("Widget generated via API", {
+        domainId,
+        panelId,
+        runId: run.id,
+        widgetId: widget.id
+      }, "server");
       response.status(201).json(widget);
     } catch (error) {
       next(error);
@@ -254,6 +309,7 @@ export function createApp() {
 
   app.get("/generated/widgets/:widgetId", async (request, response, next) => {
     try {
+      logger.debug("Serving generated widget HTML", { widgetId: request.params.widgetId }, "widgets");
       const html = await widgetService.getServedIndexHtml(request.params.widgetId);
 
       if (!html) {
@@ -269,6 +325,10 @@ export function createApp() {
 
   app.get("/generated/widgets/:widgetId/files/:fileName", async (request, response, next) => {
     try {
+      logger.debug("Serving generated widget asset", {
+        widgetId: request.params.widgetId,
+        fileName: request.params.fileName
+      }, "widgets");
       const filePath = await widgetService.getWidgetFilePath(request.params.widgetId, request.params.fileName);
 
       if (!filePath) {
@@ -284,6 +344,7 @@ export function createApp() {
   });
 
   app.get("/api/events", (request, response) => {
+    logger.debug("SSE client connected", {}, "events");
     response.setHeader("Content-Type", "text/event-stream");
     response.setHeader("Cache-Control", "no-cache");
     response.setHeader("Connection", "keep-alive");
@@ -314,6 +375,7 @@ export function createApp() {
     eventBus.on("domain.refresh", onDomainRefresh);
 
     request.on("close", () => {
+      logger.debug("SSE client disconnected", {}, "events");
       clearInterval(heartbeat);
       eventBus.off("run.update", onRunUpdate);
       eventBus.off("workspace.update", onWorkspaceUpdate);
@@ -322,12 +384,16 @@ export function createApp() {
   });
 
   app.use((error, _request, response, _next) => {
-    console.error(error);
+    logger.error("Unhandled server error", {
+      error: error.message,
+      stack: error.stack
+    }, "server");
     response.status(500).json({
       error: error.message ?? "Unexpected server error."
     });
   });
 
+  app.locals.logger = logger;
   app.locals.refreshCoordinator = refreshCoordinator;
   return app;
 }
@@ -336,7 +402,7 @@ export async function startServer(
   port = Number(process.env.PORT ?? process.env.APP_PORT ?? 3000),
   host = process.env.HOST ?? "127.0.0.1"
 ) {
-  const app = createApp();
+  const app = await createApp();
   const server = http.createServer(app);
 
   await new Promise((resolve) => {
@@ -344,6 +410,7 @@ export async function startServer(
   });
 
   await app.locals.refreshCoordinator?.start();
+  app.locals.logger?.info("Morphy server started", { host, port }, "server");
 
   return { app, server };
 }

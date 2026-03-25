@@ -22,5 +22,32 @@
     "workspacePlanTtlMs": 300000,
     "analysisTtlMs": 300000,
     "panelsPerSweep": 3
+  },
+  "diagnostics": {
+    "server": {
+      "enabled": true,
+      "level": "info",
+      "categories": [
+        "server",
+        "refresh",
+        "analysis",
+        "planner",
+        "widgets",
+        "datasources"
+      ],
+      "maxFieldLength": 320
+    },
+    "client": {
+      "enabled": true,
+      "level": "info",
+      "categories": [
+        "app",
+        "render",
+        "events",
+        "widgets",
+        "network"
+      ],
+      "maxFieldLength": 240
+    }
   }
 }

@@ -49,8 +49,29 @@ function buildWidgetPayload(domain, panel, run) {
   };
 }
 
+function sanitizeHtmlFragment(htmlFragment) {
+  let fragment = String(htmlFragment ?? "").trim();
+
+  fragment = fragment
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<\/?(html|head|body)\b[^>]*>/gi, "")
+    .replace(/<base\b[^>]*>/gi, "");
+
+  let appIdSeen = false;
+  fragment = fragment.replace(/\bid=(["'])app\1/gi, () => {
+    if (appIdSeen) {
+      return 'data-morphy-root="generated"';
+    }
+    appIdSeen = true;
+    return 'data-morphy-root="generated"';
+  });
+
+  return fragment;
+}
+
 function buildIndexHtml(widget, payload) {
   const serializedPayload = JSON.stringify(payload).replaceAll("</script", "<\\/script");
+  const htmlFragment = sanitizeHtmlFragment(widget.htmlFragment);
 
   return `<!doctype html>
 <html lang="en">
@@ -61,7 +82,7 @@ function buildIndexHtml(widget, payload) {
     <link rel="stylesheet" href="/generated/widgets/${widget.id}/files/styles.css">
   </head>
   <body>
-    <div id="app">${widget.htmlFragment}</div>
+    <div id="app">${htmlFragment}</div>
     <script>window.__MORPHY_PAYLOAD__ = ${serializedPayload};</script>
     <script src="/runtime/widget-bridge.js"></script>
     <script src="/generated/widgets/${widget.id}/files/widget.js"></script>
@@ -332,14 +353,28 @@ function parseArtifactResponse(response) {
 }
 
 export class WidgetService {
-  constructor({ configStore }) {
+  constructor({ configStore, logger }) {
     this.configStore = configStore;
+    this.logger = logger ?? {
+      trace() {},
+      debug() {},
+      info() {},
+      warn() {},
+      error() {}
+    };
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
   }
 
   async generateForRun({ domain, panel, run }) {
     const appConfig = await this.configStore.getAppConfig();
     const artifactId = crypto.randomUUID();
+    this.logger.info("Generating widget artifact", {
+      artifactId,
+      domainId: domain.id,
+      panelId: panel.id,
+      runId: run.id,
+      provider: this.openai ? "openai" : "fallback"
+    }, "widgets");
     const bundle = this.openai
       ? await this.generateWithOpenAI({ appConfig, domain, panel, run })
       : buildFallbackBundle(domain, panel, run);
@@ -362,10 +397,21 @@ export class WidgetService {
 
     await this.writeBundle(widget, bundle, payload);
     await this.configStore.saveWidget(widget);
+    this.logger.info("Saved widget artifact", {
+      artifactId: widget.id,
+      panelId: panel.id,
+      runId: run.id
+    }, "widgets");
     return widget;
   }
 
   async generateWithOpenAI({ appConfig, domain, panel, run }) {
+    this.logger.debug("Requesting OpenAI widget generation", {
+      domainId: domain.id,
+      panelId: panel.id,
+      runId: run.id,
+      model: appConfig.codegen?.model ?? "gpt-5.4"
+    }, "widgets");
     const response = await this.openai.responses.create({
       model: appConfig.codegen?.model ?? "gpt-5.4",
       reasoning: {
@@ -412,6 +458,11 @@ export class WidgetService {
   async writeBundle(widget, bundle, payload) {
     const bundleDir = path.join(paths.widgetBundlesDir, widget.id);
     await fs.mkdir(bundleDir, { recursive: true });
+    this.logger.debug("Writing widget bundle", {
+      widgetId: widget.id,
+      bundleDir,
+      files: widget.files
+    }, "widgets");
 
     const files = {
       "index.html": buildIndexHtml({ ...widget, htmlFragment: bundle.htmlFragment }, payload),
@@ -447,10 +498,12 @@ export class WidgetService {
     const filePath = await this.getWidgetFilePath(widgetId, "index.html");
 
     if (!filePath) {
+      this.logger.warn("Requested widget HTML for unknown widget", { widgetId }, "widgets");
       return null;
     }
 
     let html = await fs.readFile(filePath, "utf8");
+    this.logger.debug("Serving widget HTML", { widgetId, filePath }, "widgets");
 
     html = html.replace(
       /<script\b([^>]*)\bsrc=(["'])([^"']*\/widget\.js)\2([^>]*)><\/script>/gi,
@@ -464,7 +517,17 @@ export class WidgetService {
       }
     );
 
+    let appRootSeen = false;
+    html = html.replace(/\bid=(["'])app\1/gi, () => {
+      if (appRootSeen) {
+        return 'data-morphy-root="generated"';
+      }
+      appRootSeen = true;
+      return 'id="app"';
+    });
+
     if (html.includes("window.__MORPHY_PAYLOAD__")) {
+      this.logger.trace("Widget HTML already contains payload", { widgetId }, "widgets");
       return html;
     }
 
@@ -474,6 +537,13 @@ export class WidgetService {
     const panel = domain?.panels.find((entry) => entry.id === run?.panelId);
 
     if (!widget || !run?.report || !domain || !panel) {
+      this.logger.warn("Widget payload injection skipped due to missing context", {
+        widgetId,
+        hasWidget: Boolean(widget),
+        hasRun: Boolean(run),
+        hasDomain: Boolean(domain),
+        hasPanel: Boolean(panel)
+      }, "widgets");
       return html;
     }
 

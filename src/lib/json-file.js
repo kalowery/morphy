@@ -15,9 +15,15 @@ export async function readJson(filePath, fallback = null) {
 }
 
 export async function writeJson(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const dirPath = path.dirname(filePath);
+  await fs.mkdir(dirPath, { recursive: true });
   const payload = `${JSON.stringify(value, null, 2)}\n`;
-  await fs.writeFile(filePath, payload, "utf8");
+  const tempPath = path.join(
+    dirPath,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  );
+  await fs.writeFile(tempPath, payload, "utf8");
+  await fs.rename(tempPath, filePath);
 }
 
 export async function listJsonFiles(dirPath) {
@@ -32,4 +38,3 @@ export async function listJsonFiles(dirPath) {
     throw error;
   }
 }
-

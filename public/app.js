@@ -1,3 +1,5 @@
+import { createBrowserLogger } from "./runtime/logger.js";
+
 const state = {
   appConfig: null,
   domains: [],
@@ -42,8 +44,11 @@ const elements = {
 const panelTemplate = document.querySelector("#panel-card-template");
 const runTemplate = document.querySelector("#run-card-template");
 const STALE_RUN_MS = 5 * 60 * 1000;
+const logger = createBrowserLogger("app");
 
 async function request(url, options = {}) {
+  const method = options.method ?? "GET";
+  logger.debug("Request started", { url, method }, "network");
   const response = await fetch(url, {
     headers: {
       "Content-Type": "application/json"
@@ -53,9 +58,16 @@ async function request(url, options = {}) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: response.statusText }));
+    logger.warn("Request failed", {
+      url,
+      method,
+      status: response.status,
+      error: payload.error ?? response.statusText
+    }, "network");
     throw new Error(payload.error ?? "Request failed.");
   }
 
+  logger.debug("Request completed", { url, method, status: response.status }, "network");
   return response.status === 204 ? null : response.json();
 }
 
@@ -172,6 +184,10 @@ function setSelectedDomain(domainId) {
   state.selectedDomainId = domainId;
   const domain = currentDomain();
   state.activePanelId = state.workspacePlans[domainId]?.focusPanelId ?? state.domainSnapshots[domainId]?.workspacePlan?.focusPanelId ?? domain?.panels[0]?.id ?? null;
+  logger.info("Selected domain", {
+    domainId,
+    activePanelId: state.activePanelId
+  }, "render");
   renderDomains();
   renderCurrentDomain();
 }
@@ -249,10 +265,22 @@ function currentWorkspacePlan() {
   return domain ? state.workspacePlans[domain.id] ?? null : null;
 }
 
-function orderedPanelsForDomain(domain) {
+function visiblePanelIdsForDomain(domain) {
+  if (!domain) {
+    return [];
+  }
+
+  const domainPanelIds = domain.panels.map((panel) => panel.id);
   const workspacePlan = state.workspacePlans[domain.id] ?? null;
-  const visiblePanelIds = workspacePlan?.visiblePanelIds?.filter((panelId) => domain.panels.some((panel) => panel.id === panelId));
-  const orderedIds = visiblePanelIds?.length ? visiblePanelIds : domain.panels.map((panel) => panel.id);
+  const planVisiblePanelIds = workspacePlan?.visiblePanelIds?.filter((panelId) => domainPanelIds.includes(panelId)) ?? [];
+
+  return planVisiblePanelIds.length
+    ? [...planVisiblePanelIds, ...domainPanelIds.filter((panelId) => !planVisiblePanelIds.includes(panelId))]
+    : domainPanelIds;
+}
+
+function orderedPanelsForDomain(domain) {
+  const orderedIds = visiblePanelIdsForDomain(domain);
   return orderedIds
     .map((panelId) => domain.panels.find((panel) => panel.id === panelId))
     .filter(Boolean);
@@ -530,29 +558,67 @@ function widgetPayload(run, domain, panel) {
   };
 }
 
+function renderWidgetStatus(run, widgetRun) {
+  if (!run?.report && !widgetRun?.widgetId) {
+    return "";
+  }
+
+  if (run?.widgetId) {
+    return "";
+  }
+
+  if (widgetRun?.widgetId && widgetRun.id !== run?.id) {
+    return `
+      <div class="widget-status widget-status-stale">
+        <strong>Widget fallback in use.</strong> The generated widget below is from an older analysis run because the latest run does not have a widget artifact yet.
+      </div>
+    `;
+  }
+
+  if (run?.widgetError) {
+    return `
+      <div class="widget-status widget-status-warning">
+        <strong>Generated widget unavailable.</strong> ${escapeHtml(run.widgetError)}
+      </div>
+    `;
+  }
+
+  if (run?.report) {
+    return `
+      <div class="widget-status widget-status-pending">
+        <strong>No generated widget for this run yet.</strong> The native chart above is current; the browser widget has not been produced for this analysis.
+      </div>
+    `;
+  }
+
+  return "";
+}
+
 function renderVisualization(run, domain, panel, widgetRun = null) {
   const nativeChart = `
     <div class="native-chart-shell">
       ${run?.report?.chart ? renderChart(run.report.chart) : renderPlaceholderChart(panel.chartPreference)}
     </div>
   `;
+  const widgetStatus = renderWidgetStatus(run, widgetRun);
 
   const widgetSourceRun = widgetRun?.widgetId ? widgetRun : run?.widgetId ? run : null;
 
   if (!widgetSourceRun?.widgetId) {
-    return `<div class="chart-stack">${nativeChart}</div>`;
+    return `<div class="chart-stack">${nativeChart}${widgetStatus}</div>`;
   }
 
   return `
     <div class="chart-stack">
       ${nativeChart}
+      ${widgetStatus}
       <div class="widget-host">
         <p class="widget-caption">Generated browser widget served from the artifact runtime.</p>
         <iframe
           class="widget-frame"
           title="${escapeHtml(panel.title)}"
           src="/generated/widgets/${encodeURIComponent(widgetSourceRun.widgetId)}"
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-same-origin"
           data-widget-id="${escapeHtml(widgetSourceRun.widgetId)}"
           data-run-id="${escapeHtml(widgetSourceRun.id)}"
           data-domain-id="${escapeHtml(domain.id)}"
@@ -571,9 +637,21 @@ function postToWidgetFrame(frame, type = "init") {
   const panel = domain?.panels.find((entry) => entry.id === frame.dataset.panelId);
 
   if (!run || !domain || !panel || !frame.contentWindow) {
+    logger.debug("Skipped widget frame post due to missing context", {
+      type,
+      runId: frame.dataset.runId,
+      domainId: frame.dataset.domainId,
+      panelId: frame.dataset.panelId
+    }, "widgets");
     return;
   }
 
+  logger.trace("Posting message to widget frame", {
+    type,
+    runId: run.id,
+    panelId: panel.id,
+    widgetId: frame.dataset.widgetId
+  }, "widgets");
   frame.contentWindow.postMessage(
     {
       source: "morphy-host",
@@ -592,7 +670,16 @@ function bindWidgetFrames() {
     }
 
     frame.dataset.bound = "true";
+    logger.debug("Binding widget frame", {
+      widgetId: frame.dataset.widgetId,
+      runId: frame.dataset.runId,
+      panelId: frame.dataset.panelId
+    }, "widgets");
     frame.addEventListener("load", () => {
+      logger.debug("Widget frame loaded", {
+        widgetId: frame.dataset.widgetId,
+        runId: frame.dataset.runId
+      }, "widgets");
       postToWidgetFrame(frame, "init");
     });
 
@@ -611,6 +698,7 @@ function renderCurrentDomain() {
 
   if (!domain) {
     state.currentDomainRenderSignature = "no-domain";
+    logger.debug("Render skipped because no domain is selected", {}, "render");
     elements.domainName.textContent = "Select a domain";
     elements.domainDescription.textContent = "Upload or generate a domain description to project a specialized analytics UI.";
     elements.domainChip.textContent = "No domain";
@@ -636,10 +724,19 @@ function renderCurrentDomain() {
   const nextRenderSignature = currentDomainRenderSignature(domain);
 
   if (state.currentDomainRenderSignature === nextRenderSignature) {
+    logger.trace("Skipping render because signature is unchanged", {
+      domainId: domain.id,
+      activePanelId: state.activePanelId
+    }, "render");
     return;
   }
 
   state.currentDomainRenderSignature = nextRenderSignature;
+  logger.debug("Rendering current domain", {
+    domainId: domain.id,
+    activePanelId: state.activePanelId,
+    orderedPanelIds: orderedPanels.map((panel) => panel.id)
+  }, "render");
   elements.panelRail.innerHTML = "";
   elements.panelStage.innerHTML = "";
   renderWorkspacePlan(workspacePlan);
@@ -669,6 +766,10 @@ function renderCurrentDomain() {
       <span class="panel-rail-summary">${panel.summary}</span>
     `;
     button.addEventListener("click", () => {
+      logger.info("Selected panel", {
+        domainId: domain.id,
+        panelId: panel.id
+      }, "render");
       state.activePanelId = panel.id;
       renderCurrentDomain();
     });
@@ -778,11 +879,13 @@ async function refresh() {
   });
 
   if (state.bootstrapSignature && state.bootstrapSignature === nextSignature) {
+    logger.trace("Skipping bootstrap merge because signature is unchanged", {}, "network");
     return;
   }
 
   state.bootstrapSignature = nextSignature;
   state.appConfig = payload.appConfig;
+  logger.update(payload.appConfig?.diagnostics?.client ?? {});
   state.domains = payload.domains;
   state.dataSources = payload.dataSources;
   state.sourcePreviews = payload.sourcePreviews;
@@ -818,6 +921,12 @@ async function refresh() {
   const shouldRenderCurrentDomain =
     previousSelectedDomainId !== state.selectedDomainId ||
     previousDomainSignature !== nextDomainSignature;
+  logger.info("Bootstrap state merged", {
+    selectedDomainId: state.selectedDomainId,
+    domainCount: state.domains.length,
+    runCount: state.runs.length,
+    shouldRenderCurrentDomain
+  }, "network");
 
   elements.appName.textContent = payload.appConfig.app?.name || "Morphy";
   renderAgentStatus(payload.agent);
@@ -877,6 +986,7 @@ async function createDataSource(event) {
 async function runAnalysis(domainId, panelId, force = false) {
   const panelKey = `${domainId}:${panelId}`;
   state.panelRunState[panelKey] = { status: "starting", force };
+  logger.info("Run analysis clicked", { domainId, panelId, force }, "events");
   renderCurrentDomain();
 
   const run = await request("/api/analysis/run", {
@@ -891,6 +1001,7 @@ async function runAnalysis(domainId, panelId, force = false) {
   renderRuns();
 
   if (run.status === "in_progress") {
+    logger.debug("Run entered polling state", { runId: run.id, domainId, panelId }, "events");
     await pollRun(run.id);
   } else {
     await refresh();
@@ -908,10 +1019,16 @@ async function pollRun(runId) {
     renderRuns();
 
     if (run.status === "completed" || run.status === "failed") {
+      logger.info("Polling completed for run", {
+        runId,
+        status: run.status,
+        attempt: attempt + 1
+      }, "events");
       return run;
     }
   }
 
+  logger.warn("Polling timed out for run", { runId }, "events");
   return null;
 }
 
@@ -985,8 +1102,15 @@ async function requestDomainRefresh(force = false) {
 
 function connectEvents() {
   const events = new EventSource("/api/events");
+  logger.info("Opening SSE connection", {}, "events");
   events.addEventListener("run.update", (event) => {
     const run = JSON.parse(event.data);
+    logger.debug("Received run.update", {
+      runId: run.id,
+      domainId: run.domainId,
+      panelId: run.panelId,
+      status: run.status
+    }, "events");
     state.runs = [run, ...state.runs.filter((entry) => entry.id !== run.id)].sort(
       (left, right) => new Date(right.updatedAt) - new Date(left.updatedAt)
     );
@@ -997,10 +1121,18 @@ function connectEvents() {
   });
   events.addEventListener("workspace.update", (event) => {
     const workspacePlan = JSON.parse(event.data);
+    logger.debug("Received workspace.update", {
+      domainId: workspacePlan.domainId,
+      focusPanelId: workspacePlan.focusPanelId,
+      visiblePanelIds: workspacePlan.visiblePanelIds
+    }, "events");
     state.workspacePlans[workspacePlan.domainId] = workspacePlan;
 
     if (workspacePlan.domainId === state.selectedDomainId) {
-      if (!state.activePanelId || !workspacePlan.visiblePanelIds?.includes(state.activePanelId)) {
+      const domain = currentDomain();
+      const nextVisiblePanelIds = visiblePanelIdsForDomain(domain);
+
+      if (!state.activePanelId || !nextVisiblePanelIds.includes(state.activePanelId)) {
         state.activePanelId = workspacePlan.focusPanelId;
       }
       renderCurrentDomain();
@@ -1008,12 +1140,20 @@ function connectEvents() {
   });
   events.addEventListener("domain.refresh", (event) => {
     const snapshot = JSON.parse(event.data);
+    logger.debug("Received domain.refresh", {
+      domainId: snapshot.domainId,
+      reason: snapshot.reason,
+      focusPanelId: snapshot.workspacePlan?.focusPanelId ?? null
+    }, "events");
     state.domainSnapshots[snapshot.domainId] = snapshot;
     if (snapshot.workspacePlan) {
       state.workspacePlans[snapshot.domainId] = snapshot.workspacePlan;
     }
     if (state.selectedDomainId === snapshot.domainId) {
-      if (!state.activePanelId || !snapshot.workspacePlan?.visiblePanelIds?.includes(state.activePanelId)) {
+      const domain = currentDomain();
+      const nextVisiblePanelIds = visiblePanelIdsForDomain(domain);
+
+      if (!state.activePanelId || !nextVisiblePanelIds.includes(state.activePanelId)) {
         state.activePanelId = snapshot.workspacePlan?.focusPanelId ?? state.activePanelId;
       }
       if (snapshot.context?.previews?.length) {
@@ -1042,9 +1182,18 @@ window.addEventListener("message", (event) => {
   });
 
   if (!frame) {
+    logger.trace("Ignored widget message for unknown frame", {
+      type: message.type,
+      sessionId: message.sessionId ?? null
+    }, "widgets");
     return;
   }
 
+  logger.trace("Received widget message", {
+    type: message.type,
+    widgetId: frame.dataset.widgetId,
+    runId: frame.dataset.runId
+  }, "widgets");
   if (message.type === "widget:bootstrap") {
     postToWidgetFrame(frame, "init");
   }
