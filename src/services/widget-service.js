@@ -28,16 +28,43 @@ function sanitizeFileName(fileName) {
 
 function firstQueryWindow(context) {
   for (const preview of context?.previews ?? []) {
-    if (preview?.detail?.queryWindow) {
-      return preview.detail.queryWindow;
+    if (preview?.detail?.queryWindow || preview?.queryWindow) {
+      return preview.detail?.queryWindow ?? preview.queryWindow;
     }
   }
 
   return null;
 }
 
+function normalizePreviewForWidget(preview) {
+  const detail = preview?.detail ?? {};
+  return {
+    sourceId: preview?.sourceId ?? null,
+    sourceName: preview?.sourceName ?? detail.sourceName ?? null,
+    sourceType: preview?.sourceType ?? detail.sourceType ?? null,
+    status: preview?.status ?? "unknown",
+    queryWindow: detail.queryWindow ?? preview?.queryWindow ?? null,
+    queryResults: Array.isArray(detail.queryResults)
+      ? detail.queryResults
+      : Array.isArray(preview?.queryResults)
+        ? preview.queryResults
+        : [],
+    metrics: detail.metrics ?? preview?.metrics ?? {}
+  };
+}
+
+function normalizeContextForWidget(context) {
+  return {
+    domainId: context?.domainId ?? null,
+    domainName: context?.domainName ?? null,
+    previewCount: Array.isArray(context?.previews) ? context.previews.length : 0,
+    previews: (context?.previews ?? []).map(normalizePreviewForWidget)
+  };
+}
+
 function buildWidgetPayload(domain, panel, run, widget = null) {
-  const queryWindow = firstQueryWindow(run.context);
+  const normalizedContext = normalizeContextForWidget(run.context);
+  const queryWindow = firstQueryWindow(normalizedContext);
   return {
     runId: run.id,
     domain: {
@@ -58,7 +85,7 @@ function buildWidgetPayload(domain, panel, run, widget = null) {
       confidence: run.archetypeConfidence ?? null
     },
     report: run.report,
-    context: run.context,
+    context: normalizedContext,
     timestamps: {
       runCreatedAt: run.createdAt ?? null,
       runUpdatedAt: run.updatedAt ?? null,
@@ -225,17 +252,22 @@ function buildIndexHtml(widget, payload) {
       #app [class*="stat"],
       #app [class*="box"],
       #app [class*="list"],
+      #app [class*="lane"],
+      #app [class*="legend"],
+      #app [class*="chip"],
+      #app [class*="metric"],
       #app [class*="shell"],
       #app [class*="priority"],
       #app [class*="narrative"] {
-        background-color: var(--morphy-surface-strong);
-        border-color: var(--morphy-line);
+        background: linear-gradient(180deg, var(--morphy-surface-strong), var(--morphy-surface)) !important;
+        border-color: var(--morphy-line) !important;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24) !important;
       }
       #app [style*="background: rgba(255,255,255"],
       #app [style*="background:rgba(255,255,255"],
       #app [style*="background-color: rgba(255,255,255"],
       #app [style*="background-color:rgba(255,255,255"] {
-        background: var(--morphy-surface-strong) !important;
+        background: linear-gradient(180deg, var(--morphy-surface-strong), var(--morphy-surface)) !important;
       }
       #app [style*="color: #b"],
       #app [style*="color:#b"],
@@ -245,6 +277,19 @@ function buildIndexHtml(widget, payload) {
       }
       #app a {
         color: #9be7ff;
+      }
+      #app .hfci-shell,
+      #app .hfci-root,
+      #app .hf-board,
+      #app .widget-shell {
+        --hfci-bg: #07111d !important;
+        --hfci-bg2: #0a1624 !important;
+        --hfci-panel: #0d1725 !important;
+        --hfci-panel-2: #101b2b !important;
+        --hfci-text: var(--morphy-text) !important;
+        --hfci-muted: var(--morphy-muted) !important;
+        --hfci-soft: #93a8ba !important;
+        --hfci-line: var(--morphy-line) !important;
       }
     </style>
   </head>
@@ -335,17 +380,22 @@ function buildContrastRepairStyle() {
       #app [class*="stat"],
       #app [class*="box"],
       #app [class*="list"],
+      #app [class*="lane"],
+      #app [class*="legend"],
+      #app [class*="chip"],
+      #app [class*="metric"],
       #app [class*="shell"],
       #app [class*="priority"],
       #app [class*="narrative"] {
-        background-color: var(--morphy-surface-strong);
-        border-color: var(--morphy-line);
+        background: linear-gradient(180deg, var(--morphy-surface-strong), var(--morphy-surface)) !important;
+        border-color: var(--morphy-line) !important;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24) !important;
       }
       #app [style*="background: rgba(255,255,255"],
       #app [style*="background:rgba(255,255,255"],
       #app [style*="background-color: rgba(255,255,255"],
       #app [style*="background-color:rgba(255,255,255"] {
-        background: var(--morphy-surface-strong) !important;
+        background: linear-gradient(180deg, var(--morphy-surface-strong), var(--morphy-surface)) !important;
       }
       #app [style*="color: #b"],
       #app [style*="color:#b"],
@@ -355,6 +405,19 @@ function buildContrastRepairStyle() {
       }
       #app a {
         color: #9be7ff;
+      }
+      #app .hfci-shell,
+      #app .hfci-root,
+      #app .hf-board,
+      #app .widget-shell {
+        --hfci-bg: #07111d !important;
+        --hfci-bg2: #0a1624 !important;
+        --hfci-panel: #0d1725 !important;
+        --hfci-panel-2: #101b2b !important;
+        --hfci-text: var(--morphy-text) !important;
+        --hfci-muted: var(--morphy-muted) !important;
+        --hfci-soft: #93a8ba !important;
+        --hfci-line: var(--morphy-line) !important;
       }
     </style>
   `;
@@ -1099,11 +1162,6 @@ export class WidgetService {
       }
     }
 
-    if (html.includes("window.__MORPHY_PAYLOAD__")) {
-      this.logger.trace("Widget HTML already contains payload", { widgetId }, "widgets");
-      return html;
-    }
-
     const widget = await this.configStore.getWidget(widgetId);
     const run = widget ? await this.configStore.getRun(widget.runId) : null;
     const domain = run ? await this.configStore.getDomain(run.domainId) : null;
@@ -1122,6 +1180,11 @@ export class WidgetService {
 
     const payload = JSON.stringify(buildWidgetPayload(domain, panel, run, widget)).replaceAll("</script", "<\\/script");
     const injection = `<script>window.__MORPHY_PAYLOAD__ = ${payload};</script>`;
+
+    if (html.includes("window.__MORPHY_PAYLOAD__")) {
+      this.logger.trace("Replacing embedded widget payload", { widgetId }, "widgets");
+      return html.replace(/<script>\s*window\.__MORPHY_PAYLOAD__\s*=\s*[\s\S]*?<\/script>/i, injection);
+    }
 
     if (html.includes('<script src="/runtime/widget-bridge.js"></script>')) {
       return html.replace('<script src="/runtime/widget-bridge.js"></script>', `${injection}\n    <script src="/runtime/widget-bridge.js"></script>`);

@@ -37,6 +37,7 @@ const elements = {
   sourceForm: document.querySelector("#source-form"),
   agentStatus: document.querySelector("#agent-status"),
   spendSummary: document.querySelector("#spend-summary"),
+  resetSpendButton: document.querySelector("#reset-spend-button"),
   refreshButton: document.querySelector("#refresh-button"),
   studioToggleButton: document.querySelector("#studio-toggle-button"),
   studioCloseButton: document.querySelector("#studio-close-button"),
@@ -973,7 +974,7 @@ function renderVisualization(run, domain, panel, widgetRun = null) {
           class="widget-frame"
           title="${escapeHtml(panel.title)}"
           src="/generated/widgets/${encodeURIComponent(widgetSourceRun.widgetId)}"
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           data-widget-id="${escapeHtml(widgetSourceRun.widgetId)}"
           data-run-id="${escapeHtml(widgetSourceRun.id)}"
           data-domain-id="${escapeHtml(domain.id)}"
@@ -1213,7 +1214,8 @@ function renderCurrentDomain() {
   const staleRun = stalePanelRun(domainRuns, panel.id);
   const failedRun = failedPanelRun(domainRuns, panel.id);
   const lifecycleRun = activeRun ?? latestRun ?? failedRun ?? staleRun ?? null;
-  node.querySelector(".panel-kicker").textContent = latestRun?.archetypeTitle || panel.chartPreference;
+  const panelMetaRun = activeRun ?? latestRun ?? failedRun ?? staleRun ?? null;
+  node.querySelector(".panel-kicker").textContent = panelMetaRun?.archetypeTitle || panel.chartPreference;
   node.querySelector(".panel-title").textContent = panel.title;
   node.querySelector(".panel-summary").textContent = panel.summary;
   node.querySelector(".panel-phase-shell").innerHTML = renderRunLifecycle(lifecycleRun, transientState);
@@ -1223,7 +1225,7 @@ function renderCurrentDomain() {
     ? "Generated Browser Visualization"
     : latestRun?.report?.chart?.title || "Awaiting chart output";
   node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel, widgetRun);
-  node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, latestRun, domain);
+  node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, panelMetaRun, domain);
   node.querySelector(".report-shell").innerHTML = latestRun?.report
     ? `
       ${renderArchetypeDetails(latestRun)}
@@ -1531,6 +1533,22 @@ async function requestDomainRefresh(force = false) {
   await refresh();
 }
 
+async function resetSpend() {
+  const confirmed = window.confirm("Reset cumulative model spend totals?");
+  if (!confirmed) {
+    return;
+  }
+
+  const summary = await request("/api/spend/reset", {
+    method: "POST"
+  });
+  state.spendSummary = summary;
+  renderSpendSummary();
+  if (state.selectedDomainId) {
+    renderCurrentDomain();
+  }
+}
+
 function connectEvents() {
   const events = new EventSource("/api/events");
   logger.info("Opening SSE connection", {}, "events");
@@ -1666,6 +1684,10 @@ elements.sourceForm.addEventListener("submit", (event) => {
 
 elements.refreshButton.addEventListener("click", () => {
   requestDomainRefresh(false).catch((error) => window.alert(error.message));
+});
+
+elements.resetSpendButton?.addEventListener("click", () => {
+  resetSpend().catch((error) => window.alert(error.message));
 });
 
 if (elements.sourcePreviewSection) {

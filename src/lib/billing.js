@@ -357,6 +357,19 @@ export class BillingTracker {
     return summary;
   }
 
+  async resetLedger() {
+    const nextLedger = {
+      updatedAt: new Date().toISOString(),
+      entries: []
+    };
+    await this.configStore.saveBillingLedger(nextLedger);
+    const appConfig = await this.configStore.getAppConfig();
+    const summary = summarizeLedger([], appConfig);
+    this.eventBus?.emit("spend.update", summary);
+    this.logger.info("Reset billing ledger", {}, "billing");
+    return summary;
+  }
+
   async recordResponseUsage({
     response,
     model,

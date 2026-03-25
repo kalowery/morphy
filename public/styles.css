@@ -744,6 +744,11 @@ textarea {
   gap: 0.9rem;
 }
 
+.compact-button {
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
+}
+
 .spend-total-card {
   padding: 0.9rem;
   border-radius: 18px;

@@ -1,5 +1,10 @@
 # Morphy
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Status: Experimental](https://img.shields.io/badge/status-experimental-0f766e)
+![Node.js](https://img.shields.io/badge/node-%3E%3D20-3c873a)
+![Express](https://img.shields.io/badge/express-5.x-111827)
+
 Morphy is an experiment in **metamorphic systems**: software that can contextually modify parts of its own behavior and presentation through the use of AI while still remaining bounded, inspectable, and operable.
 
 In practice, Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, select presentation modes, and generate browser-executable visualization artifacts for individual panels.
