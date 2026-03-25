@@ -6,6 +6,8 @@ In practice, Morphy is a config-driven analytical web application for projecting
 
 The current prototype is built with Node.js and Express and is centered on a shared server-side runtime rather than per-browser ad hoc analysis. That makes it suitable for monitoring and analysis domains where multiple users should see the same current operational picture without duplicating expensive model calls.
 
+For a fuller system-design treatment, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## What Morphy Is Trying To Do
 
 Morphy is designed around a few core ideas:
