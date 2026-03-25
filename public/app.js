@@ -15,7 +15,8 @@ const state = {
   panelRunState: {},
   sectionOverrides: {},
   bootstrapSignature: null,
-  currentDomainRenderSignature: null
+  currentDomainRenderSignature: null,
+  spendSummary: null
 };
 
 const elements = {
@@ -35,6 +36,7 @@ const elements = {
   domainPrompt: document.querySelector("#domain-prompt"),
   sourceForm: document.querySelector("#source-form"),
   agentStatus: document.querySelector("#agent-status"),
+  spendSummary: document.querySelector("#spend-summary"),
   refreshButton: document.querySelector("#refresh-button"),
   studioToggleButton: document.querySelector("#studio-toggle-button"),
   studioCloseButton: document.querySelector("#studio-close-button"),
@@ -74,6 +76,49 @@ async function request(url, options = {}) {
 
 function currentDomain() {
   return state.domains.find((domain) => domain.id === state.selectedDomainId) ?? null;
+}
+
+function formatUsd(value) {
+  const numeric = Number(value ?? 0);
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: numeric < 1 ? 4 : 2,
+    maximumFractionDigits: numeric < 1 ? 4 : 2
+  }).format(numeric);
+}
+
+function summarizePanelSpend(domainId, panelId, archetypeId = null) {
+  const source = archetypeId ? (state.spendSummary?.byPanelArchetype ?? []) : (state.spendSummary?.byPanel ?? []);
+  return source
+    .filter((entry) => entry.domainId === domainId && entry.panelId === panelId && (!archetypeId || entry.archetypeId === archetypeId))
+    .reduce(
+      (summary, entry) => ({
+        totalUsd: summary.totalUsd + Number(entry.cost?.totalUsd ?? 0),
+        inputUsd: summary.inputUsd + Number(entry.cost?.inputUsd ?? 0),
+        cachedInputUsd: summary.cachedInputUsd + Number(entry.cost?.cachedInputUsd ?? 0),
+        outputUsd: summary.outputUsd + Number(entry.cost?.outputUsd ?? 0),
+        entries: summary.entries + Number(entry.entries ?? 0)
+      }),
+      { totalUsd: 0, inputUsd: 0, cachedInputUsd: 0, outputUsd: 0, entries: 0 }
+    );
+}
+
+function currentRunSpend(run) {
+  const matchingEntries = (state.spendSummary?.recentEntries ?? []).filter((entry) => entry.runId === run?.id);
+  const derivedAnalysisUsd = matchingEntries
+    .filter((entry) => entry.operation === "panel_analysis")
+    .reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
+  const derivedWidgetUsd = matchingEntries
+    .filter((entry) => entry.operation === "widget_generation")
+    .reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
+  const analysisUsd = Number(run?.analysisCost?.totalUsd ?? derivedAnalysisUsd ?? 0);
+  const widgetUsd = Number(run?.widgetCost?.totalUsd ?? derivedWidgetUsd ?? 0);
+  return {
+    analysisUsd,
+    widgetUsd,
+    totalUsd: analysisUsd + widgetUsd
+  };
 }
 
 function getRunUpdatedAt(run) {
@@ -244,6 +289,63 @@ function renderAgentStatus(agent) {
   `;
 }
 
+function renderSpendSummary() {
+  if (!elements.spendSummary) {
+    return;
+  }
+
+  const summary = state.spendSummary;
+  if (!summary) {
+    elements.spendSummary.innerHTML = `<p class="hint">No model usage recorded yet.</p>`;
+    return;
+  }
+
+  const currentDomainId = state.selectedDomainId ?? null;
+  const domainPanels = (summary.byPanel ?? []).filter((entry) => entry.domainId === currentDomainId).slice(0, 5);
+  const models = (summary.byModel ?? []).slice(0, 4);
+  const archetypes = (summary.byArchetype ?? []).slice(0, 4);
+
+  elements.spendSummary.innerHTML = `
+    <div class="spend-total-card">
+      <span class="section-label">Total Spend</span>
+      <strong>${formatUsd(summary.totals?.cost?.totalUsd ?? 0)}</strong>
+    </div>
+    <div class="spend-breakdown-grid">
+      <div class="metric">
+        <span class="label">Input</span>
+        <span class="value">${formatUsd(summary.totals?.cost?.inputUsd ?? 0)}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Cached Input</span>
+        <span class="value">${formatUsd(summary.totals?.cost?.cachedInputUsd ?? 0)}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Output</span>
+        <span class="value">${formatUsd(summary.totals?.cost?.outputUsd ?? 0)}</span>
+      </div>
+    </div>
+    <p class="hint">Reasoning tokens currently account for ${formatUsd(summary.totals?.cost?.reasoningOutputUsd ?? 0)} of output spend.</p>
+    <div class="spend-section">
+      <p class="section-label">By Model</p>
+      <ul class="spend-list">
+        ${models.map((entry) => `<li><span>${escapeHtml(entry.model)}</span><strong>${formatUsd(entry.cost?.totalUsd ?? 0)}</strong></li>`).join("") || `<li><span>No priced model usage yet</span></li>`}
+      </ul>
+    </div>
+    <div class="spend-section">
+      <p class="section-label">${currentDomainId ? "Current Domain Panels" : "Panels"}</p>
+      <ul class="spend-list">
+        ${domainPanels.map((entry) => `<li><span>${escapeHtml(entry.panelTitle)}</span><strong>${formatUsd(entry.cost?.totalUsd ?? 0)}</strong></li>`).join("") || `<li><span>No panel-attributed spend yet</span></li>`}
+      </ul>
+    </div>
+    <div class="spend-section">
+      <p class="section-label">By Archetype</p>
+      <ul class="spend-list">
+        ${archetypes.map((entry) => `<li><span>${escapeHtml(entry.archetypeTitle ?? formatArchetypeTitle(entry.archetypeId))}</span><strong>${formatUsd(entry.cost?.totalUsd ?? 0)}</strong></li>`).join("") || `<li><span>No archetype-attributed spend yet</span></li>`}
+      </ul>
+    </div>
+  `;
+}
+
 function renderStudio() {
   if (!elements.studioDrawer || !elements.studioOverlay || !elements.studioToggleButton) {
     return;
@@ -317,6 +419,7 @@ function currentDomainRenderSignature(domain) {
   const staleRun = panel ? stalePanelRun(domainRuns, panel.id) : null;
   const failedRun = panel ? failedPanelRun(domainRuns, panel.id) : null;
   const panelKey = panel ? `${domain.id}:${panel.id}` : null;
+  const panelSpend = panel ? summarizePanelSpend(domain.id, panel.id) : null;
 
   return JSON.stringify({
     domainId: domain.id,
@@ -340,7 +443,8 @@ function currentDomainRenderSignature(domain) {
           widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetStatus ?? null, widgetRun.widgetId ?? null] : null,
           activeRun: activeRun ? [activeRun.id, activeRun.updatedAt] : null,
           staleRun: staleRun ? [staleRun.id, staleRun.updatedAt] : null,
-          failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null
+          failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null,
+          panelSpend: panelSpend ? [panelSpend.totalUsd, panelSpend.entries] : null
         }
       : null
   });
@@ -894,10 +998,21 @@ function formatArchetypeTitle(value) {
     .join(" ");
 }
 
-function renderArchetypeMeta(panel, run) {
+function renderArchetypeMeta(panel, run, domain) {
   const allowedArchetypes = Array.isArray(panel.allowedArchetypes) && panel.allowedArchetypes.length
     ? panel.allowedArchetypes
     : [];
+  const panelSpend = domain ? summarizePanelSpend(domain.id, panel.id) : null;
+  const archetypeSpend = domain && run?.selectedArchetype ? summarizePanelSpend(domain.id, panel.id, run.selectedArchetype) : null;
+  const runSpend = currentRunSpend(run);
+  const spendMeta = run
+    ? `
+      <p class="panel-archetype-meta">Current run spend: ${formatUsd(runSpend.totalUsd)}${runSpend.analysisUsd ? ` · analysis ${formatUsd(runSpend.analysisUsd)}` : ""}${runSpend.widgetUsd ? ` · widget ${formatUsd(runSpend.widgetUsd)}` : ""}</p>
+      <p class="panel-archetype-meta">Panel cumulative: ${formatUsd(panelSpend?.totalUsd ?? 0)}${run?.selectedArchetype ? ` · this archetype ${formatUsd(archetypeSpend?.totalUsd ?? 0)}` : ""}</p>
+    `
+    : panelSpend?.entries
+      ? `<p class="panel-archetype-meta">Panel cumulative spend: ${formatUsd(panelSpend.totalUsd)}</p>`
+      : "";
 
   if (!run?.selectedArchetype) {
     const allowed = allowedArchetypes.length
@@ -913,6 +1028,7 @@ function renderArchetypeMeta(panel, run) {
           <span class="section-label">Allowed Archetypes</span>
           <span class="archetype-badge">${escapeHtml(allowed)}</span>
         </div>
+        ${spendMeta}
         ${guidance}
       </div>
     `;
@@ -930,6 +1046,7 @@ function renderArchetypeMeta(panel, run) {
         <span class="archetype-badge">${escapeHtml(run.archetypeTitle || formatArchetypeTitle(run.selectedArchetype))}</span>
       </div>
       <p class="panel-archetype-meta">${escapeHtml(confidence)}</p>
+      ${spendMeta}
       ${reason}
     </div>
   `;
@@ -1106,7 +1223,7 @@ function renderCurrentDomain() {
     ? "Generated Browser Visualization"
     : latestRun?.report?.chart?.title || "Awaiting chart output";
   node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel, widgetRun);
-  node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, latestRun);
+  node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, latestRun, domain);
   node.querySelector(".report-shell").innerHTML = latestRun?.report
     ? `
       ${renderArchetypeDetails(latestRun)}
@@ -1184,6 +1301,7 @@ async function refresh() {
     liveStateUpdatedAt: payload.liveStateUpdatedAt ?? null,
     runs: (payload.runs ?? []).map((run) => [run.id, run.updatedAt, run.status, run.widgetStatus ?? null, run.widgetId ?? null]),
     widgets: (payload.widgets ?? []).map((widget) => widget.id),
+    spendUpdatedAt: payload.spendSummary?.updatedAt ?? null,
     plans: Object.fromEntries(
       Object.entries(payload.workspacePlans ?? {}).map(([domainId, workspacePlan]) => [domainId, workspacePlan?.updatedAt ?? null])
     )
@@ -1202,6 +1320,7 @@ async function refresh() {
   state.sourcePreviews = payload.sourcePreviews;
   state.runs = payload.runs;
   state.widgets = payload.widgets;
+  state.spendSummary = payload.spendSummary ?? null;
   state.domainSnapshots = payload.domainSnapshots ?? {};
   state.workspacePlans = {
     ...(payload.workspacePlans ?? {})
@@ -1241,6 +1360,7 @@ async function refresh() {
 
   elements.appName.textContent = payload.appConfig.app?.name || "Morphy";
   renderAgentStatus(payload.agent);
+  renderSpendSummary();
   renderDomains();
   renderSourcePreviews();
   if (shouldRenderCurrentDomain) {
@@ -1473,6 +1593,17 @@ function connectEvents() {
           .concat(snapshot.context.previews);
       }
       renderSourcePreviews();
+      renderCurrentDomain();
+    }
+  });
+  events.addEventListener("spend.update", (event) => {
+    state.spendSummary = JSON.parse(event.data);
+    logger.debug("Received spend.update", {
+      totalUsd: state.spendSummary?.totals?.cost?.totalUsd ?? 0,
+      entries: state.spendSummary?.totals?.entries ?? 0
+    }, "events");
+    renderSpendSummary();
+    if (state.selectedDomainId) {
       renderCurrentDomain();
     }
   });

@@ -15,6 +15,7 @@ const paths = {
   runsDir: path.join(rootDir, "data", "state", "runs"),
   workspacePlans: path.join(rootDir, "data", "state", "workspace-plans.json"),
   sessions: path.join(rootDir, "data", "state", "agent-sessions.json"),
+  billingLedger: path.join(rootDir, "data", "state", "billing-ledger.json"),
   widgetsIndex: path.join(rootDir, "data", "state", "widgets", "index.json"),
   widgetBundlesDir: path.join(rootDir, "data", "state", "widget-bundles")
 };
@@ -67,6 +68,17 @@ export class ConfigStore {
 
   async saveSessions(sessions) {
     return writeJson(paths.sessions, sessions);
+  }
+
+  async getBillingLedger() {
+    return readJson(paths.billingLedger, {
+      updatedAt: null,
+      entries: []
+    });
+  }
+
+  async saveBillingLedger(billingLedger) {
+    return writeJson(paths.billingLedger, billingLedger);
   }
 
   async saveRun(run) {

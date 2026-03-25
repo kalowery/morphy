@@ -9,12 +9,23 @@
   "agent": {
     "model": "gpt-5.4",
     "reasoningEffort": "medium",
-    "allowBackground": true
+    "allowBackground": true,
+    "reuseResponseHistory": false
   },
   "codegen": {
     "model": "gpt-5.4",
     "reasoningEffort": "medium",
     "sandboxMode": "iframe"
+  },
+  "billing": {
+    "currency": "USD",
+    "models": {
+      "gpt-5.4": {
+        "inputPer1M": 2.5,
+        "cachedInputPer1M": 0.25,
+        "outputPer1M": 15
+      }
+    }
   },
   "archetypes": {
     "defaultArchetype": "incident-summary",
@@ -62,6 +73,7 @@
         "analysis",
         "planner",
         "widgets",
+        "billing",
         "datasources"
       ],
       "maxFieldLength": 320

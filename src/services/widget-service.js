@@ -77,6 +77,49 @@ function buildWidgetPayload(domain, panel, run, widget = null) {
   };
 }
 
+function compactWidgetContext(context) {
+  return {
+    previews: (context?.previews ?? []).map((preview) => ({
+      sourceId: preview.sourceId,
+      sourceName: preview.sourceName,
+      sourceType: preview.sourceType,
+      status: preview.status,
+      queryWindow: preview.detail?.queryWindow ?? null,
+      queryResults: (preview.detail?.queryResults ?? []).slice(0, 3).map((result) => ({
+        queryName: result.queryName,
+        resultType: result.resultType,
+        resultCount: result.resultCount,
+        sample: (result.sample ?? []).slice(0, 3).map((entry) => ({
+          metric: entry.metric ?? {},
+          value: entry.value
+        }))
+      }))
+    }))
+  };
+}
+
+function compactWidgetRun(run) {
+  return {
+    id: run.id,
+    selectedArchetype: run.selectedArchetype ?? null,
+    archetypeTitle: run.archetypeTitle ?? null,
+    report: {
+      narrative: (run.report?.narrative ?? []).slice(0, 4),
+      highlights: (run.report?.highlights ?? []).slice(0, 6),
+      details: (run.report?.details ?? []).slice(0, 4),
+      chart: run.report?.chart
+        ? {
+            type: run.report.chart.type,
+            title: run.report.chart.title,
+            labels: (run.report.chart.labels ?? []).slice(0, 8),
+            values: (run.report.chart.values ?? []).slice(0, 8)
+          }
+        : null
+    },
+    context: compactWidgetContext(run.context)
+  };
+}
+
 function sanitizeHtmlFragment(htmlFragment) {
   let fragment = String(htmlFragment ?? "").trim();
 
@@ -113,10 +156,20 @@ function buildIndexHtml(widget, payload) {
         --morphy-text: ${payload.theme?.text ?? "#ebf4ff"};
         --morphy-muted: ${payload.theme?.muted ?? "#97a8bc"};
         --morphy-bg: ${payload.theme?.background ?? "#07111d"};
+        --morphy-surface: ${payload.theme?.panel ?? "#101826"};
+        --morphy-surface-strong: #0d1725;
+        --morphy-line: rgba(151, 168, 188, 0.18);
+        --morphy-accent-soft: rgba(141, 240, 198, 0.12);
       }
       html, body {
         background: var(--morphy-bg);
         color: var(--morphy-text);
+      }
+      body {
+        min-height: 100vh;
+      }
+      #app {
+        background: transparent;
       }
       #app,
       #app p,
@@ -144,6 +197,52 @@ function buildIndexHtml(widget, payload) {
       #app .caption {
         color: var(--morphy-muted);
       }
+      #app .subtitle,
+      #app .subtext,
+      #app .subtle,
+      #app .meta,
+      #app .meta-text,
+      #app .secondary,
+      #app .secondary-text,
+      #app .label,
+      #app .legend,
+      #app .tick,
+      #app .axis,
+      #app .axis-label,
+      #app [class*="subtitle"],
+      #app [class*="summary"],
+      #app [class*="caption"],
+      #app [class*="meta"],
+      #app [class*="note"],
+      #app [class*="muted"],
+      #app [class*="label"],
+      #app [class*="sub"] {
+        color: var(--morphy-muted) !important;
+      }
+      #app [class*="panel"],
+      #app [class*="card"],
+      #app [class*="tile"],
+      #app [class*="stat"],
+      #app [class*="box"],
+      #app [class*="list"],
+      #app [class*="shell"],
+      #app [class*="priority"],
+      #app [class*="narrative"] {
+        background-color: var(--morphy-surface-strong);
+        border-color: var(--morphy-line);
+      }
+      #app [style*="background: rgba(255,255,255"],
+      #app [style*="background:rgba(255,255,255"],
+      #app [style*="background-color: rgba(255,255,255"],
+      #app [style*="background-color:rgba(255,255,255"] {
+        background: var(--morphy-surface-strong) !important;
+      }
+      #app [style*="color: #b"],
+      #app [style*="color:#b"],
+      #app [style*="color: rgba(255,255,255,0."],
+      #app [style*="color:rgba(255,255,255,0."] {
+        color: var(--morphy-text) !important;
+      }
       #app a {
         color: #9be7ff;
       }
@@ -165,6 +264,100 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function buildContrastRepairStyle() {
+  return `
+    <style data-morphy-contrast-repair>
+      :root {
+        --morphy-surface: #101826;
+        --morphy-surface-strong: #0d1725;
+        --morphy-text: #ebf4ff;
+        --morphy-muted: #97a8bc;
+        --morphy-line: rgba(151, 168, 188, 0.18);
+      }
+      html, body {
+        background: #07111d;
+        color: var(--morphy-text);
+      }
+      body {
+        min-height: 100vh;
+      }
+      #app,
+      #app p,
+      #app span,
+      #app div,
+      #app li,
+      #app strong,
+      #app small,
+      #app h1,
+      #app h2,
+      #app h3,
+      #app h4,
+      #app h5,
+      #app h6,
+      #app label,
+      #app dt,
+      #app dd {
+        color: var(--morphy-text);
+      }
+      #app .eyebrow,
+      #app .muted,
+      #app .summary,
+      #app .hint,
+      #app .note,
+      #app .caption,
+      #app .subtitle,
+      #app .subtext,
+      #app .subtle,
+      #app .meta,
+      #app .meta-text,
+      #app .secondary,
+      #app .secondary-text,
+      #app .label,
+      #app .legend,
+      #app .tick,
+      #app .axis,
+      #app .axis-label,
+      #app [class*="subtitle"],
+      #app [class*="summary"],
+      #app [class*="caption"],
+      #app [class*="meta"],
+      #app [class*="note"],
+      #app [class*="muted"],
+      #app [class*="label"],
+      #app [class*="sub"] {
+        color: var(--morphy-muted) !important;
+      }
+      #app [class*="panel"],
+      #app [class*="card"],
+      #app [class*="tile"],
+      #app [class*="stat"],
+      #app [class*="box"],
+      #app [class*="list"],
+      #app [class*="shell"],
+      #app [class*="priority"],
+      #app [class*="narrative"] {
+        background-color: var(--morphy-surface-strong);
+        border-color: var(--morphy-line);
+      }
+      #app [style*="background: rgba(255,255,255"],
+      #app [style*="background:rgba(255,255,255"],
+      #app [style*="background-color: rgba(255,255,255"],
+      #app [style*="background-color:rgba(255,255,255"] {
+        background: var(--morphy-surface-strong) !important;
+      }
+      #app [style*="color: #b"],
+      #app [style*="color:#b"],
+      #app [style*="color: rgba(255,255,255,0."],
+      #app [style*="color:rgba(255,255,255,0."] {
+        color: var(--morphy-text) !important;
+      }
+      #app a {
+        color: #9be7ff;
+      }
+    </style>
+  `;
 }
 
 function fallbackArchetypeId(run) {
@@ -688,7 +881,7 @@ function parseArtifactResponse(response) {
 }
 
 export class WidgetService {
-  constructor({ configStore, logger }) {
+  constructor({ configStore, logger, billingTracker = null }) {
     this.configStore = configStore;
     this.logger = logger ?? {
       trace() {},
@@ -697,6 +890,7 @@ export class WidgetService {
       warn() {},
       error() {}
     };
+    this.billingTracker = billingTracker;
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
   }
 
@@ -710,9 +904,10 @@ export class WidgetService {
       runId: run.id,
       provider: this.openai ? "openai" : "fallback"
     }, "widgets");
-    const bundle = this.openai
+    const generated = this.openai
       ? await this.generateWithOpenAI({ appConfig, domain, panel, run })
       : buildFallbackBundle(domain, panel, run);
+    const bundle = this.openai ? generated.bundle : generated;
     const widget = {
       id: artifactId,
       domainId: domain.id,
@@ -733,12 +928,27 @@ export class WidgetService {
 
     await this.writeBundle(widget, bundle, payload);
     await this.configStore.saveWidget(widget);
+    let billingEntry = null;
+    if (this.openai && generated?.response) {
+      billingEntry = await this.billingTracker?.recordResponseUsage({
+        response: generated.response,
+        model: appConfig.codegen?.model ?? "gpt-5.4",
+        operation: "widget_generation",
+        provider: "openai-responses",
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title,
+        archetypeId: run.selectedArchetype,
+        archetypeTitle: run.archetypeTitle,
+        runId: run.id
+      });
+    }
     this.logger.info("Saved widget artifact", {
       artifactId: widget.id,
       panelId: panel.id,
       runId: run.id
     }, "widgets");
-    return widget;
+    return { widget, billingEntry };
   }
 
   async generateWithOpenAI({ appConfig, domain, panel, run }) {
@@ -772,17 +982,23 @@ export class WidgetService {
           content: [
             {
               type: "input_text",
-              text: `Create a polished browser visualization widget for this analytical panel.\n\nDomain:\n${JSON.stringify(domain, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+              text: `Create a polished browser visualization widget for this analytical panel.\n\nDomain summary:\n${JSON.stringify({
+                id: domain.id,
+                name: domain.name,
+                color: domain.color,
+                icon: domain.icon
+              }, null, 2)}\n\nPanel summary:\n${JSON.stringify({
+                id: panel.id,
+                title: panel.title,
+                summary: panel.summary,
+                chartPreference: panel.chartPreference
+              }, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
                 id: run.selectedArchetype,
                 title: run.archetypeTitle,
                 reason: run.archetypeReason,
                 confidence: run.archetypeConfidence,
                 definition: archetype
-              }, null, 2)}\n\nArchetype widget contract:\n${JSON.stringify(widgetContract, null, 2)}\n\nRun:\n${JSON.stringify({
-                id: run.id,
-                report: run.report,
-                context: run.context
-              }, null, 2)}\n\nWidget contract:\n- Render into document.getElementById("app")\n- Use payload.report, payload.context, payload.domain, payload.panel, payload.archetype, and payload.theme\n- Register both onInit and onUpdate handlers\n- Include the archetype's required sections in some form\n- After rendering, emit widget:resize with a height field`
+              }, null, 2)}\n\nArchetype widget contract:\n${JSON.stringify(widgetContract, null, 2)}\n\nRun summary:\n${JSON.stringify(compactWidgetRun(run), null, 2)}\n\nWidget contract:\n- Render into document.getElementById("app")\n- Use payload.report, payload.context, payload.domain, payload.panel, payload.archetype, and payload.theme\n- Register both onInit and onUpdate handlers\n- Include the archetype's required sections in some form\n- After rendering, emit widget:resize with a height field`
             }
           ]
         }
@@ -797,7 +1013,10 @@ export class WidgetService {
       }
     });
 
-    return parseArtifactResponse(response);
+    return {
+      bundle: parseArtifactResponse(response),
+      response
+    };
   }
 
   async writeBundle(widget, bundle, payload) {
@@ -849,6 +1068,7 @@ export class WidgetService {
 
     let html = await fs.readFile(filePath, "utf8");
     this.logger.debug("Serving widget HTML", { widgetId, filePath }, "widgets");
+    const contrastRepairStyle = buildContrastRepairStyle();
 
     html = html.replace(
       /<script\b([^>]*)\bsrc=(["'])([^"']*\/widget\.js)\2([^>]*)><\/script>/gi,
@@ -870,6 +1090,14 @@ export class WidgetService {
       appRootSeen = true;
       return 'id="app"';
     });
+
+    if (!html.includes("data-morphy-contrast-repair")) {
+      if (html.includes("</head>")) {
+        html = html.replace("</head>", `${contrastRepairStyle}\n  </head>`);
+      } else {
+        html = `${contrastRepairStyle}\n${html}`;
+      }
+    }
 
     if (html.includes("window.__MORPHY_PAYLOAD__")) {
       this.logger.trace("Widget HTML already contains payload", { widgetId }, "widgets");

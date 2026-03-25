@@ -9,6 +9,7 @@ import { AgentRuntime } from "./services/agent-runtime.js";
 import { WidgetService } from "./services/widget-service.js";
 import { RefreshCoordinator } from "./services/refresh-coordinator.js";
 import { buildServerDiagnostics, createLogger } from "./lib/logger.js";
+import { BillingTracker } from "./lib/billing.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,8 +21,10 @@ export async function createApp() {
   const appConfig = await configStore.getAppConfig();
   const diagnostics = buildServerDiagnostics(appConfig);
   const logger = createLogger({ namespace: "server", diagnostics });
-  const widgetService = new WidgetService({ configStore, logger });
-  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService, logger });
+  const billingTracker = new BillingTracker({ configStore, eventBus, logger });
+  await billingTracker.repairLedgerCosts();
+  const widgetService = new WidgetService({ configStore, logger, billingTracker });
+  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService, logger, billingTracker });
   const refreshCoordinator = new RefreshCoordinator({ configStore, agentRuntime, eventBus, logger });
 
   app.use(express.json({ limit: "1mb" }));
@@ -30,14 +33,15 @@ export async function createApp() {
   app.get("/api/bootstrap", async (_request, response, next) => {
     try {
       logger.debug("Handling bootstrap request", {}, "server");
-      const [appConfig, dataSources, domains, runs, widgets, workspacePlans, liveState] = await Promise.all([
+      const [appConfig, dataSources, domains, runs, widgets, workspacePlans, liveState, spendSummary] = await Promise.all([
         configStore.getAppConfig(),
         configStore.getDataSources(),
         configStore.listDomains(),
         configStore.listRuns(),
         configStore.listWidgets(),
         configStore.getWorkspacePlans(),
-        configStore.getLiveState()
+        configStore.getLiveState(),
+        billingTracker.getSummary()
       ]);
 
       const sourcePreviews = liveState.sourcePreviews?.length
@@ -84,6 +88,7 @@ export async function createApp() {
         workspacePlans,
         domainSnapshots: liveState.domainSnapshots ?? {},
         liveStateUpdatedAt: liveState.updatedAt ?? null,
+        spendSummary,
         agent: {
           mode: process.env.OPENAI_API_KEY ? "openai-responses" : "fallback",
           hasApiKey: Boolean(process.env.OPENAI_API_KEY)
@@ -265,11 +270,19 @@ export async function createApp() {
       await configStore.saveRun(run);
       eventBus.emit("run.update", run);
 
-      const widget = await widgetService.generateForRun({ domain, panel, run });
+      const { widget, billingEntry } = await widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
       run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
       run.widgetStatus = "completed";
+      if (billingEntry) {
+        run.billing = {
+          ...(run.billing ?? {}),
+          widgetEntryId: billingEntry.id
+        };
+        run.widgetUsage = billingEntry.usage;
+        run.widgetCost = billingEntry.cost;
+      }
       run.updatedAt = new Date().toISOString();
       await configStore.saveRun(run);
       eventBus.emit("run.update", run);
@@ -373,6 +386,11 @@ export async function createApp() {
       response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     };
 
+    const onSpendUpdate = (spendSummary) => {
+      response.write(`event: spend.update\n`);
+      response.write(`data: ${JSON.stringify(spendSummary)}\n\n`);
+    };
+
     const heartbeat = setInterval(() => {
       response.write("event: heartbeat\n");
       response.write(`data: ${JSON.stringify({ ts: Date.now() })}\n\n`);
@@ -381,6 +399,7 @@ export async function createApp() {
     eventBus.on("run.update", onRunUpdate);
     eventBus.on("workspace.update", onWorkspaceUpdate);
     eventBus.on("domain.refresh", onDomainRefresh);
+    eventBus.on("spend.update", onSpendUpdate);
 
     request.on("close", () => {
       logger.debug("SSE client disconnected", {}, "events");
@@ -388,6 +407,7 @@ export async function createApp() {
       eventBus.off("run.update", onRunUpdate);
       eventBus.off("workspace.update", onWorkspaceUpdate);
       eventBus.off("domain.refresh", onDomainRefresh);
+      eventBus.off("spend.update", onSpendUpdate);
     });
   });
 

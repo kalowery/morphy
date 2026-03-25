@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import OpenAI from "openai";
 import { gatherDomainContext } from "./data-sources.js";
 import {
+  buildArchetypeAnalysisContract,
   buildArchetypePromptBlock,
   getArchetypeDefinition,
   getArchetypeRegistry,
@@ -129,12 +130,201 @@ const workspacePlanSchema = {
   }
 };
 
+const PANEL_QUERY_PRIORITY = {
+  "fleet-health": [
+    "instrumentedHostCount",
+    "slurmNodeHealthScore",
+    "smartFailures",
+    "ibErrorScoreByNode",
+    "gpuRasUncorrectableByNode",
+    "hotGpusByTemperature"
+  ],
+  "scheduler-pressure": [
+    "pendingJobsByPartition",
+    "partitionCpuSaturation",
+    "instrumentedHostCount"
+  ],
+  "gpu-hotspots": [
+    "hotGpusByTemperature",
+    "jobGpuUtilizationPeak",
+    "jobGpuVramPeak",
+    "jobGpuOccupancyPeak"
+  ],
+  "fabric-storage": [
+    "ibErrorScoreByNode",
+    "smartFailures",
+    "slurmNodeHealthScore"
+  ],
+  "job-correlation": [
+    "recentJobsByNode",
+    "jobGpuUtilizationPeak",
+    "jobGpuVramPeak"
+  ],
+  "job-explorer": [
+    "recentJobsByNode",
+    "jobGpuUtilizationPeak",
+    "jobGpuVramPeak",
+    "jobGpuOccupancyPeak",
+    "hotGpusByTemperature"
+  ],
+  "operator-brief": [
+    "pendingJobsByPartition",
+    "partitionCpuSaturation",
+    "hotGpusByTemperature",
+    "ibErrorScoreByNode",
+    "smartFailures",
+    "recentJobsByNode"
+  ]
+};
+
 function slugify(value) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 48);
+}
+
+function compactDomain(domain) {
+  return {
+    id: domain.id,
+    name: domain.name,
+    description: domain.description,
+    dataSources: domain.dataSources,
+    allowedArchetypes: domain.allowedArchetypes ?? [],
+    panels: (domain.panels ?? []).map((panel) => ({
+      id: panel.id,
+      title: panel.title,
+      summary: panel.summary,
+      chartPreference: panel.chartPreference,
+      allowedArchetypes: panel.allowedArchetypes ?? [],
+      preferredArchetype: panel.preferredArchetype ?? null
+    }))
+  };
+}
+
+function compactPanel(panel) {
+  return {
+    id: panel.id,
+    title: panel.title,
+    summary: panel.summary,
+    chartPreference: panel.chartPreference,
+    allowedArchetypes: panel.allowedArchetypes ?? [],
+    preferredArchetype: panel.preferredArchetype ?? null,
+    archetypeGuidance: panel.archetypeGuidance ?? "",
+    analysisPrompt: panel.analysisPrompt
+  };
+}
+
+function compactWorkspacePlan(workspacePlan, panelId = null) {
+  if (!workspacePlan) {
+    return null;
+  }
+
+  return {
+    layoutMode: workspacePlan.layoutMode,
+    focusPanelId: workspacePlan.focusPanelId,
+    panelIsFocused: panelId ? workspacePlan.focusPanelId === panelId : null,
+    visiblePanelIds: (workspacePlan.visiblePanelIds ?? []).slice(0, 8),
+    recommendedActions: (workspacePlan.recommendedActions ?? []).slice(0, 3),
+    rationale: workspacePlan.rationale ?? ""
+  };
+}
+
+function compactRecentRuns(runs = []) {
+  return runs.slice(0, 5).map((run) => ({
+    panelId: run.panelId,
+    panelTitle: run.panelTitle,
+    status: run.status,
+    updatedAt: run.updatedAt,
+    selectedArchetype: run.selectedArchetype ?? null,
+    widgetStatus: run.widgetStatus ?? null,
+    topHighlights: (run.report?.highlights ?? []).slice(0, 2),
+    chart: run.report?.chart
+      ? {
+          type: run.report.chart.type,
+          title: run.report.chart.title,
+          pointCount: Array.isArray(run.report.chart.labels) ? run.report.chart.labels.length : 0
+        }
+      : null
+  }));
+}
+
+function formatMetricLabels(metric = {}) {
+  const keys = ["instance", "partition", "jobid", "user", "card", "device"];
+  const values = keys
+    .filter((key) => metric[key] !== undefined && metric[key] !== null && metric[key] !== "")
+    .map((key) => `${key}=${metric[key]}`);
+  return values.join(", ");
+}
+
+function compactQueryResult(result, sampleCount = 4) {
+  return {
+    queryName: result.queryName,
+    resultType: result.resultType,
+    resultCount: result.resultCount,
+    sample: (result.sample ?? []).slice(0, sampleCount).map((entry) => ({
+      labels: formatMetricLabels(entry.metric ?? {}),
+      value: entry.value
+    }))
+  };
+}
+
+function relevantQueryNamesForPanel(panel) {
+  return PANEL_QUERY_PRIORITY[panel.id] ?? [];
+}
+
+function compactContextForPanel(panel, context) {
+  const preferredNames = relevantQueryNamesForPanel(panel);
+  const previews = (context.previews ?? []).map((preview) => {
+    const ready = preview.status === "ready";
+    const results = preview.detail?.queryResults ?? [];
+    const ordered = preferredNames.length
+      ? [
+          ...preferredNames
+            .map((name) => results.find((result) => result.queryName === name))
+            .filter(Boolean),
+          ...results.filter((result) => !preferredNames.includes(result.queryName))
+        ]
+      : results;
+    const selectedResults = ordered.slice(0, preferredNames.length ? Math.min(4, ordered.length) : Math.min(3, ordered.length));
+
+    return {
+      sourceId: preview.sourceId,
+      sourceName: preview.sourceName,
+      sourceType: preview.sourceType,
+      status: preview.status,
+      message: ready ? null : preview.detail?.message ?? null,
+      queryWindow: preview.detail?.queryWindow ?? null,
+      queryResults: selectedResults.map((result) => compactQueryResult(result))
+    };
+  });
+
+  return {
+    domainId: context.domainId,
+    domainName: context.domainName,
+    previewCount: previews.length,
+    previews
+  };
+}
+
+function compactContextForPlanner(context) {
+  const previews = (context.previews ?? []).map((preview) => ({
+    sourceId: preview.sourceId,
+    sourceName: preview.sourceName,
+    sourceType: preview.sourceType,
+    status: preview.status,
+    message: preview.status === "ready" ? null : preview.detail?.message ?? null,
+    queryWindow: preview.detail?.queryWindow ?? null,
+    queryResults: (preview.detail?.queryResults ?? []).slice(0, 4).map((result) => compactQueryResult(result, 3))
+  }));
+
+  return {
+    domainId: context.domainId,
+    domainName: context.domainName,
+    previewCount: previews.length,
+    previews
+  };
 }
 
 function extractJson(text) {
@@ -370,12 +560,63 @@ function buildFallbackWorkspacePlan(domain, context, recentRuns = [], preferredP
   );
 }
 
-function normalizeReport(parsed, panel) {
+function sanitizeDetailSection(section) {
+  return {
+    sectionId: section?.sectionId ? String(section.sectionId) : null,
+    title: String(section?.title ?? "").trim(),
+    items: Array.isArray(section?.items) ? section.items.map((item) => String(item)).filter(Boolean) : []
+  };
+}
+
+function mergeArchetypeDetails(contract, details = [], fallbackDetails = []) {
+  if (!contract?.detailSections?.length) {
+    return Array.isArray(details) ? details.map(sanitizeDetailSection).filter((section) => section.title && section.items.length) : [];
+  }
+
+  const normalized = Array.isArray(details) ? details.map(sanitizeDetailSection) : [];
+  const normalizedFallback = Array.isArray(fallbackDetails) ? fallbackDetails.map(sanitizeDetailSection) : [];
+
+  return contract.detailSections
+    .map((expectedSection) => {
+      const directMatch =
+        normalized.find((section) => section.sectionId === expectedSection.id) ??
+        normalized.find((section) => section.title.toLowerCase() === expectedSection.title.toLowerCase());
+      const fallbackMatch =
+        normalizedFallback.find((section) => section.sectionId === expectedSection.id) ??
+        normalizedFallback.find((section) => section.title.toLowerCase() === expectedSection.title.toLowerCase());
+      const source = directMatch?.items?.length ? directMatch : fallbackMatch;
+
+      return {
+        sectionId: expectedSection.id,
+        title: expectedSection.title,
+        items: (source?.items ?? []).slice(0, expectedSection.maxItems ?? 5)
+      };
+    })
+    .filter((section) => section.items.length);
+}
+
+function missingArchetypeSections(contract, details = []) {
+  if (!contract?.detailSections?.length) {
+    return [];
+  }
+
+  const presentSectionIds = new Set(
+    (Array.isArray(details) ? details : [])
+      .map((section) => section?.sectionId)
+      .filter(Boolean)
+  );
+
+  return contract.detailSections
+    .filter((section) => !presentSectionIds.has(section.id))
+    .map((section) => section.id);
+}
+
+function normalizeReport(parsed, panel, contract = null, fallbackDetails = []) {
   const chart = parsed.chart ?? {};
   return {
     narrative: Array.isArray(parsed.narrative) ? parsed.narrative : [String(parsed.narrative ?? "No narrative generated.")],
     highlights: Array.isArray(parsed.highlights) ? parsed.highlights : [],
-    details: Array.isArray(parsed.details) ? parsed.details : [],
+    details: mergeArchetypeDetails(contract, Array.isArray(parsed.details) ? parsed.details : [], fallbackDetails),
     chart: {
       type: chart.type ?? panel.chartPreference ?? "bar",
       title: chart.title ?? panel.title,
@@ -424,7 +665,23 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "pressure-board") {
     return [
       {
-        title: "Backlog Leaders",
+        sectionId: "pressure-metrics",
+        title: "Pressure Metrics",
+        items: toDetailItems(
+          saturation
+            .map((entry) => ({
+              label: entry.metric?.partition ?? "unknown",
+              numericValue: Number(entry.value)
+            }))
+            .filter((entry) => Number.isFinite(entry.numericValue))
+            .sort((left, right) => right.numericValue - left.numericValue)
+            .slice(0, 4),
+          (entry) => `${entry.label}: ${(entry.numericValue * 100).toFixed(0)}% saturation`
+        )
+      },
+      {
+        sectionId: "backlog-board",
+        title: "Backlog Board",
         items: toDetailItems(
           pendingJobs
             .map((entry) => ({
@@ -438,18 +695,9 @@ function buildArchetypeDetails({ run, report, context }) {
         )
       },
       {
-        title: "Saturation Leaders",
-        items: toDetailItems(
-          saturation
-            .map((entry) => ({
-              label: entry.metric?.partition ?? "unknown",
-              numericValue: Number(entry.value)
-            }))
-            .filter((entry) => Number.isFinite(entry.numericValue))
-            .sort((left, right) => right.numericValue - left.numericValue)
-            .slice(0, 4),
-          (entry) => `${entry.label}: ${(entry.numericValue * 100).toFixed(0)}% saturation`
-        )
+        sectionId: "capacity-notes",
+        title: "Capacity Notes",
+        items: (report.highlights ?? []).slice(0, 4)
       }
     ];
   }
@@ -457,10 +705,17 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "risk-scoreboard") {
     return [
       {
-        title: "Top Risks",
+        sectionId: "ranked-signals",
+        title: "Ranked Signals",
         items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
       },
       {
+        sectionId: "triage-summary",
+        title: "Triage Summary",
+        items: (report.highlights ?? []).slice(0, 4)
+      },
+      {
+        sectionId: "operator-notes",
         title: "Operator Notes",
         items: (report.highlights ?? []).slice(0, 4)
       }
@@ -470,10 +725,17 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "timeline-analysis") {
     return [
       {
-        title: "Peak Signals",
+        sectionId: "timeline-overview",
+        title: "Timeline Overview",
+        items: (report.highlights ?? []).slice(0, 3)
+      },
+      {
+        sectionId: "peak-metrics",
+        title: "Peak Metrics",
         items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
       },
       {
+        sectionId: "trend-notes",
         title: "Trend Notes",
         items: (report.narrative ?? []).slice(0, 3)
       }
@@ -483,13 +745,20 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "correlation-inspector") {
     return [
       {
-        title: "Linked Entities",
+        sectionId: "entity-links",
+        title: "Entity Links",
         items: recentJobs.slice(0, 5).map((entry) => {
           const metric = entry.metric ?? {};
           return `${metric.user ?? "unknown"} · job ${metric.jobid ?? "?"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
         })
       },
       {
+        sectionId: "evidence-matrix",
+        title: "Evidence Matrix",
+        items: (report.highlights ?? []).slice(0, 4)
+      },
+      {
+        sectionId: "attribution-notes",
         title: "Attribution Notes",
         items: (report.highlights ?? []).slice(0, 4)
       }
@@ -499,18 +768,25 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "job-detail-sheet") {
     return [
       {
-        title: "Candidate Jobs",
+        sectionId: "job-header",
+        title: "Job Header",
         items: recentJobs.slice(0, 5).map((entry) => {
           const metric = entry.metric ?? {};
           return `job ${metric.jobid ?? "?"} · ${metric.user ?? "unknown"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
         })
       },
       {
-        title: "Resource Signals",
+        sectionId: "resource-profile",
+        title: "Resource Profile",
         items: [
           ...jobGpuUtilization.slice(0, 2).map((entry) => `GPU utilization peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(0)}%`),
           ...jobGpuVram.slice(0, 2).map((entry) => `VRAM peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(1)}%`)
         ].slice(0, 4)
+      },
+      {
+        sectionId: "candidate-drilldowns",
+        title: "Candidate Drilldowns",
+        items: (report.highlights ?? []).slice(0, 4)
       }
     ];
   }
@@ -518,10 +794,17 @@ function buildArchetypeDetails({ run, report, context }) {
   if (archetype === "incident-summary") {
     return [
       {
-        title: "Priority Actions",
+        sectionId: "briefing",
+        title: "Briefing",
+        items: (report.narrative ?? []).slice(0, 3)
+      },
+      {
+        sectionId: "actions",
+        title: "Actions",
         items: (report.highlights ?? []).slice(0, 4)
       },
       {
+        sectionId: "confidence-notes",
         title: "Confidence Notes",
         items: (report.narrative ?? []).slice(0, 2)
       }
@@ -529,20 +812,22 @@ function buildArchetypeDetails({ run, report, context }) {
   }
 
   if (fabricRisk.length) {
-    return [
-      {
-        title: "Infrastructure Signals",
-        items: fabricRisk.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"}: ${Number(entry.value).toFixed(0)}`)
-      }
+      return [
+        {
+          sectionId: "ranked-signals",
+          title: "Infrastructure Signals",
+          items: fabricRisk.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"}: ${Number(entry.value).toFixed(0)}`)
+        }
     ];
   }
 
   if (hotGpus.length) {
-    return [
-      {
-        title: "Thermal Signals",
-        items: hotGpus.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"} card ${entry.metric?.card ?? "?"}: ${Number(entry.value).toFixed(0)}C`)
-      }
+      return [
+        {
+          sectionId: "peak-metrics",
+          title: "Thermal Signals",
+          items: hotGpus.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"} card ${entry.metric?.card ?? "?"}: ${Number(entry.value).toFixed(0)}C`)
+        }
     ];
   }
 
@@ -617,7 +902,7 @@ function isInProgress(run) {
 }
 
 export class AgentRuntime {
-  constructor({ configStore, eventBus, widgetService, logger }) {
+  constructor({ configStore, eventBus, widgetService, logger, billingTracker = null }) {
     this.configStore = configStore;
     this.eventBus = eventBus;
     this.widgetService = widgetService;
@@ -628,6 +913,7 @@ export class AgentRuntime {
       warn() {},
       error() {}
     };
+    this.billingTracker = billingTracker;
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
   }
 
@@ -684,6 +970,12 @@ export class AgentRuntime {
         }
       }
     });
+    await this.billingTracker?.recordResponseUsage({
+      response,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "domain_generation",
+      provider: "openai-responses"
+    });
 
     const domain = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
     await this.configStore.saveDomain(domain);
@@ -708,6 +1000,9 @@ export class AgentRuntime {
 
     const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
     const recentRuns = runs.filter((run) => run.domainId === domainId).slice(0, 8);
+    const plannerContext = compactContextForPlanner(context);
+    const plannerDomain = compactDomain(domain);
+    const plannerRuns = compactRecentRuns(recentRuns);
     this.logger.info("Planning workspace", {
       domainId,
       preferredPanelId,
@@ -750,7 +1045,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nRecent runs:\n${JSON.stringify(recentRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
+              text: `Domain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
             }
           ]
         }
@@ -763,6 +1058,13 @@ export class AgentRuntime {
           strict: true
         }
       }
+    });
+    await this.billingTracker?.recordResponseUsage({
+      response,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "workspace_planning",
+      provider: "openai-responses",
+      domainId
     });
 
     const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
@@ -793,6 +1095,7 @@ export class AgentRuntime {
   async selectArchetype({ appConfig, domain, panel, context }) {
     const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
     const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
+    const compactContext = compactContextForPanel(panel, context);
 
     if (!this.openai) {
       return fallback;
@@ -820,7 +1123,7 @@ export class AgentRuntime {
             content: [
               {
                 type: "input_text",
-                text: `Domain:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nPick the best archetype from the allowed set for the current evidence.`
+                text: `Domain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\nPick the best archetype from the allowed set for the current evidence.`
               }
             ]
           }
@@ -833,6 +1136,15 @@ export class AgentRuntime {
             strict: true
           }
         }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "archetype_selection",
+        provider: "openai-responses",
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title
       });
 
       const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
@@ -929,6 +1241,11 @@ export class AgentRuntime {
     const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
     const archetypeSelection = await this.selectArchetype({ appConfig, domain, panel, context });
     const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, archetypeSelection.selectedArchetype);
+    const analysisContract = buildArchetypeAnalysisContract(appConfig, archetypeSelection.selectedArchetype);
+    const analysisContext = compactContextForPanel(panel, context);
+    const analysisDomain = compactDomain(domain);
+    const analysisPanel = compactPanel(panel);
+    const analysisWorkspacePlan = compactWorkspacePlan(workspacePlan, panel.id);
     this.logger.info("Starting panel analysis", {
       domainId,
       panelId,
@@ -952,6 +1269,7 @@ export class AgentRuntime {
       provider: this.openai ? "openai-responses" : "local-fallback",
       trigger,
       widgetStatus: "idle",
+      billing: {},
       selectedArchetype: archetypeSelection.selectedArchetype,
       archetypeReason: archetypeSelection.reason,
       archetypeConfidence: archetypeSelection.confidence,
@@ -962,7 +1280,11 @@ export class AgentRuntime {
     };
 
     if (!this.openai && run.report) {
-      run.report.details = buildArchetypeDetails({ run, report: run.report, context: run.context });
+      run.report.details = mergeArchetypeDetails(
+        analysisContract,
+        run.report.details,
+        buildArchetypeDetails({ run, report: run.report, context: run.context })
+      );
       run.widgetStatus = "pending";
     }
 
@@ -979,12 +1301,12 @@ export class AgentRuntime {
       return run;
     }
 
-    const previousResponseId = sessions[domainId]?.previousResponseId;
+    const previousResponseId = appConfig.agent?.reuseResponseHistory ? sessions[domainId]?.previousResponseId : undefined;
     const response = await this.openai.responses.create({
       model: appConfig.agent?.model ?? "gpt-5.4",
       store: true,
       background: Boolean(appConfig.agent?.allowBackground),
-      previous_response_id: previousResponseId,
+      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -992,10 +1314,11 @@ export class AgentRuntime {
         {
           role: "system",
           content: [
-            {
-              type: "input_text",
-              text: "You are an analytical backend. Return strict JSON with keys narrative, highlights, chart, and optional details. The chart object must contain type, title, labels, and values."
-            }
+              {
+                type: "input_text",
+                text:
+                  "You are an analytical backend. Return strict JSON with keys narrative, highlights, details, and chart. The details array is required for the selected archetype. The chart object must contain type, title, labels, and values."
+              }
           ]
         },
         {
@@ -1003,13 +1326,13 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nWorkspace plan:\n${JSON.stringify(workspacePlan, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+              text: `Domain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
                 id: run.selectedArchetype,
                 title: run.archetypeTitle,
                 reason: run.archetypeReason,
                 confidence: run.archetypeConfidence,
                 allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
-              }, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}`
+              }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
             }
           ]
         }
@@ -1029,11 +1352,13 @@ export class AgentRuntime {
       status: run.status
     }, "analysis");
 
-    sessions[domainId] = {
-      previousResponseId: response.id,
-      updatedAt: new Date().toISOString()
-    };
-    await this.configStore.saveSessions(sessions);
+    if (appConfig.agent?.reuseResponseHistory) {
+      sessions[domainId] = {
+        previousResponseId: response.id,
+        updatedAt: new Date().toISOString()
+      };
+      await this.configStore.saveSessions(sessions);
+    }
 
     if (run.status === "completed") {
       await this.completeRun(run.id, domain, panel, response);
@@ -1134,9 +1459,44 @@ export class AgentRuntime {
     }
 
     run.status = "completed";
-    run.report = normalizeReport(parsed, panel);
-    if (!run.report.details.length) {
-      run.report.details = buildArchetypeDetails({ run, report: run.report, context: run.context });
+    const analysisContract = buildArchetypeAnalysisContract(await this.configStore.getAppConfig(), run.selectedArchetype);
+    const preliminaryReport = normalizeReport(parsed, panel);
+    run.report = normalizeReport(
+      parsed,
+      panel,
+      analysisContract,
+      buildArchetypeDetails({ run, report: preliminaryReport, context: run.context })
+    );
+    const missingSections = missingArchetypeSections(analysisContract, run.report.details);
+    if (!run.billing?.analysisEntryId) {
+      const entry = await this.billingTracker?.recordResponseUsage({
+        response,
+        model: (await this.configStore.getAppConfig()).agent?.model ?? "gpt-5.4",
+        operation: "panel_analysis",
+        provider: "openai-responses",
+        domainId: run.domainId,
+        panelId: run.panelId,
+        panelTitle: run.panelTitle,
+        archetypeId: run.selectedArchetype,
+        archetypeTitle: run.archetypeTitle,
+        runId: run.id
+      });
+      if (entry) {
+        run.billing = {
+          ...(run.billing ?? {}),
+          analysisEntryId: entry.id
+        };
+        run.analysisUsage = entry.usage;
+        run.analysisCost = entry.cost;
+      }
+    }
+    if (missingSections.length) {
+      this.logger.warn("Analysis completed with incomplete archetype detail coverage", {
+        runId,
+        panelId: panel.id,
+        selectedArchetype: run.selectedArchetype,
+        missingSections
+      }, "analysis");
     }
     run.widgetStatus = "pending";
     run.widgetError = null;
@@ -1170,11 +1530,19 @@ export class AgentRuntime {
         domainId: domain.id,
         panelId: panel.id
       }, "widgets");
-      const widget = await this.widgetService.generateForRun({ domain, panel, run });
+      const { widget, billingEntry } = await this.widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
       run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
       run.widgetStatus = "completed";
+      if (billingEntry) {
+        run.billing = {
+          ...(run.billing ?? {}),
+          widgetEntryId: billingEntry.id
+        };
+        run.widgetUsage = billingEntry.usage;
+        run.widgetCost = billingEntry.cost;
+      }
       this.logger.info("Widget attached to run", {
         runId: run.id,
         widgetId: widget.id,
