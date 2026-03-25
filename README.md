@@ -1,6 +1,8 @@
 # Morphy
 
-Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, and generate browser-executable visualization artifacts for individual panels.
+Morphy is an experiment in **metamorphic systems**: software that can contextually modify parts of its own behavior and presentation through the use of AI while still remaining bounded, inspectable, and operable.
+
+In practice, Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, select presentation modes, and generate browser-executable visualization artifacts for individual panels.
 
 The current prototype is built with Node.js and Express and is centered on a shared server-side runtime rather than per-browser ad hoc analysis. That makes it suitable for monitoring and analysis domains where multiple users should see the same current operational picture without duplicating expensive model calls.
 
@@ -12,6 +14,7 @@ Morphy is designed around a few core ideas:
 - Domain identity and baseline scaffolding come from config files.
 - The server-side agent decides what is analytically relevant right now.
 - The browser UI can adapt within bounded rules without becoming unstable.
+- AI can contextually reshape the workspace and panel presentation without being allowed to rewrite the entire app.
 - Generated visual artifacts can run in the browser, but only inside a controlled host runtime.
 
 In practice, that means Morphy can be aimed at:
@@ -61,6 +64,7 @@ Domain scaffolding is pre-generated or authored in JSON config. A domain defines
 - its baseline panel list
 - per-panel analysis prompts
 - preferred chart types
+- allowed widget archetypes per panel
 
 This scaffolding gives the UI a dependable starting shape even before any analysis has run.
 
@@ -71,6 +75,7 @@ The server runtime in [src/services/agent-runtime.js](src/services/agent-runtime
 - gathering datasource preview context
 - planning the workspace
 - running per-panel analyses
+- selecting panel archetypes
 - persisting analysis state
 - optionally delegating widget generation
 
@@ -102,6 +107,21 @@ Morphy has a bounded workspace planner. The planner can change:
 
 It cannot arbitrarily rewrite the whole frontend. The planner output is structured JSON, and the client interprets that JSON directly. Freeform rationale text is informational only.
 
+### Archetype-Driven Presentation
+
+Morphy now has an explicit archetype layer for panel presentation. Archetypes are bounded widget families such as:
+
+- `risk-scoreboard`
+- `pressure-board`
+- `timeline-analysis`
+- `correlation-inspector`
+- `incident-summary`
+- `job-detail-sheet`
+
+Each panel declares the archetypes it is allowed to use. At runtime, the analysis layer selects an archetype based on the current data, panel purpose, and confidence. That choice is persisted on the run and used by both the host UI and widget generation.
+
+This is an important part of Morphy's metamorphic behavior: the system is not just filling in charts, it is choosing among constrained presentation modes in response to context.
+
 ### Generated Browser Widgets
 
 Completed runs can produce browser-executable widget bundles stored under `data/state/widget-bundles`.
@@ -119,8 +139,11 @@ The current model is:
 
 - server-side agent decides what panel analysis is needed
 - a report is produced first
+- an archetype is selected for the run
 - widget generation is a follow-on enhancement step
 - the native chart remains available as the guaranteed fallback
+
+Widget generation is intentionally decoupled from analysis completion. A run can finish analysis before its widget artifact is ready.
 
 ## Runtime Data Model
 
@@ -128,11 +151,12 @@ Important persisted state includes:
 
 - domain configs in `data/domains`
 - datasource configs in `config/data-sources.json`
-- runs in `data/state/runs`
-- session metadata in `data/state/agent-sessions.json`
-- workspace plans in `data/state/workspace-plans.json`
-- shared live state in `data/state/live-state.json`
-- widget metadata in `data/state/widgets/index.json`
+- runtime state generated under `data/state`
+  - panel runs
+  - workspace plans
+  - shared live state
+  - widget metadata
+  - generated widget bundles
 
 This persistence lets Morphy recover state across server restarts and serve a current view immediately to newly connected browsers.
 
@@ -148,6 +172,10 @@ Current UX behavior includes:
 - recent runs and source previews as secondary material
 - native charts for baseline readability
 - generated widgets as richer optional artifacts
+- explicit lifecycle display for analysis and widget generation
+- local-time timestamps for analysis, widget creation, and data snapshot timing
+- archetype metadata showing allowed and selected presentation modes
+- archetype-specific detail cards rendered natively by the host UI
 
 ## Multi-User Behavior
 
@@ -158,6 +186,7 @@ The intended multi-user model is:
 - users can request analysis manually
 - normal reruns reuse fresh or in-progress work when possible
 - force reruns bypass reuse and start a fresh analysis
+- scheduled refresh sweeps can run multiple panel analyses concurrently within configured limits
 
 This reduces duplicate model calls and keeps the application closer to a shared monitoring surface than a single-user prompt toy.
 
@@ -199,9 +228,32 @@ npm start
 http://127.0.0.1:3000
 ```
 
+## Current Runtime Behavior
+
+Morphy currently uses a shared refresh model with these defaults:
+
+- refresh coordinator tick every 60 seconds
+- datasource preview TTL of 60 seconds
+- workspace plan TTL of 5 minutes
+- analysis TTL of 5 minutes
+- up to 3 panels refreshed per domain sweep
+
+Normal panel runs reuse fresh or in-progress work. `Force Re-run` bypasses that reuse and starts a new analysis for the selected panel.
+
+Analysis and widget creation have separate phases. In the UI you should expect a panel to move through states like:
+
+- `Starting`
+- `Analysis Running`
+- `Analysis Complete`
+- `Widget Pending`
+- `Widget Generating`
+- `Widget Ready`
+
+This separation is deliberate. Morphy treats the report/native chart path as primary and the generated widget as an asynchronous enhancement.
+
 ## Diagnostics And Tracing
 
-Morphy now has a structured diagnostics layer on both the server and browser side. The intent is to make planner, refresh, analysis, widget, and render behavior observable without adding ad hoc `console.log` calls each time something looks wrong.
+Morphy has a structured diagnostics layer on both the server and browser side. The intent is to make planner, refresh, analysis, widget, and render behavior observable without adding ad hoc `console.log` calls each time something looks wrong.
 
 ### Server Diagnostics
 
@@ -280,6 +332,17 @@ Generated widgets running in iframe sandboxes use the bridge in [public/runtime/
 
 This is useful when a widget is blank, stale, or appears to stop responding to host updates.
 
+### What To Watch During Analysis
+
+When debugging a panel run, the most useful signals are:
+
+- `analysis` logs to see whether a run was reused or freshly started
+- `planner` logs to see whether the workspace reprioritized the panel
+- `widgets` logs to see whether widget generation started, completed, or failed
+- browser `render` and `events` logs to see whether the client actually updated the active panel
+
+Because analysis and widget generation are separate phases, a completed analysis with a pending widget is a valid and expected intermediate state.
+
 ### Recommended Debugging Workflow
 
 For server-side issues:
@@ -318,6 +381,7 @@ That split is meant to reduce speculation when debugging missing panels, stale w
 - [src/services/widget-service.js](src/services/widget-service.js): widget bundle generation and serving
 - [src/services/data-sources.js](src/services/data-sources.js): datasource previews and VictoriaMetrics access
 - [src/services/config-store.js](src/services/config-store.js): persisted config and runtime state
+- [src/lib/archetypes.js](src/lib/archetypes.js): archetype registry and prompt/widget contracts
 - [public/app.js](public/app.js): client-side workspace rendering and event handling
 - [public/runtime/widget-bridge.js](public/runtime/widget-bridge.js): iframe bridge for generated widgets
 - [src/lib/logger.js](src/lib/logger.js): structured server logger and env/config overrides
@@ -327,8 +391,10 @@ That split is meant to reduce speculation when debugging missing panels, stale w
 
 - datasource access is still preview-oriented rather than a full query-planning system
 - relational support is still a stub
-- widget generation is useful but not yet consistently high quality
+- widget generation is improved by archetypes, but validation of archetype conformance is still weak
 - generated browser artifacts are sandboxed, but the validation and CSP story should be tightened before production use
+- the planner can rearrange and reprioritize scaffolding, but it still cannot fully regenerate domain scaffolding at runtime
+- server-side OpenAI usage currently treats models as API models, not as a full Codex harness with tool execution
 - auth, tenancy, and operator approval controls are not implemented
 
 ## Direction
@@ -338,7 +404,9 @@ The broader direction for Morphy is:
 - fixed outer shell
 - config-driven domain scaffolding
 - bounded agent-driven workspace adaptation
+- archetype-driven panel presentation
 - shared server-side analysis refresh
 - generated browser widgets for panel-specific visual artifacts
+- richer metamorphic behavior through safe, contextual self-modification of the workspace
 
 That combination is meant to let one application serve many domains without reducing the UI to a raw chatbot or requiring a separate hand-built frontend for every dataset.
