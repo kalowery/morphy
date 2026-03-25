@@ -199,6 +199,117 @@ npm start
 http://127.0.0.1:3000
 ```
 
+## Diagnostics And Tracing
+
+Morphy now has a structured diagnostics layer on both the server and browser side. The intent is to make planner, refresh, analysis, widget, and render behavior observable without adding ad hoc `console.log` calls each time something looks wrong.
+
+### Server Diagnostics
+
+Server logging is configured by `diagnostics.server` in [config/app.config.json](config/app.config.json).
+
+Current controls:
+
+- `enabled`: turn server diagnostics on or off
+- `level`: one of `trace`, `debug`, `info`, `warn`, `error`, `silent`
+- `categories`: category filter list
+- `maxFieldLength`: truncates oversized structured fields in log output
+
+The server also supports environment overrides:
+
+- `MORPHY_LOG_ENABLED`
+- `MORPHY_LOG_LEVEL`
+- `MORPHY_LOG_CATEGORIES`
+- `MORPHY_LOG_MAX_FIELD_LENGTH`
+
+Example: run Morphy with detailed planner, analysis, and widget logs.
+
+```bash
+MORPHY_LOG_LEVEL=debug \
+MORPHY_LOG_CATEGORIES=planner,analysis,widgets,refresh \
+npm start
+```
+
+Server logs are structured JSON lines. Typical categories include:
+
+- `server`
+- `refresh`
+- `planner`
+- `analysis`
+- `widgets`
+- `datasources`
+- `events`
+
+### Browser Diagnostics
+
+Browser logging is configured by `diagnostics.client` in [config/app.config.json](config/app.config.json), but it can also be overridden at runtime.
+
+The browser logger supports URL parameters:
+
+- `morphyLogEnabled`
+- `morphyLogLevel`
+- `morphyLogCategories`
+
+Example: open the app with focused render, network, event, and widget tracing enabled.
+
+```text
+http://127.0.0.1:3000/?morphyLogLevel=debug&morphyLogCategories=render,events,widgets,network
+```
+
+Browser overrides can also be persisted in local storage:
+
+- `morphy:log:enabled`
+- `morphy:log:level`
+- `morphy:log:categories`
+
+Typical browser categories include:
+
+- `app`
+- `render`
+- `network`
+- `events`
+- `widgets`
+
+### Widget Bridge Tracing
+
+Generated widgets running in iframe sandboxes use the bridge in [public/runtime/widget-bridge.js](public/runtime/widget-bridge.js). When browser diagnostics are enabled for `widgets`, the bridge logs:
+
+- iframe bootstrap messages
+- host `init` / `update` messages
+- widget resize events
+- handler registration
+
+This is useful when a widget is blank, stale, or appears to stop responding to host updates.
+
+### Recommended Debugging Workflow
+
+For server-side issues:
+
+- start with `MORPHY_LOG_LEVEL=debug`
+- narrow categories to `refresh,planner,analysis,widgets`
+- watch whether the latest run completed, whether widget generation was attempted, and whether a workspace update hid or deprioritized a panel
+
+For client-side issues:
+
+- open the app with `?morphyLogLevel=debug&morphyLogCategories=render,events,widgets,network`
+- watch panel selection, bootstrap merges, SSE events, and iframe message flow in the browser console
+
+For datasource issues:
+
+- include the `datasources` category on the server
+- confirm the exact preview queries being executed and whether they succeeded or failed
+
+### Current Semantics
+
+Diagnostics are intentionally structured around categories instead of raw verbosity. In practice:
+
+- `refresh` tells you what the background coordinator decided to sweep
+- `planner` tells you why the workspace changed
+- `analysis` tells you whether a run was reused, started, synced, or completed
+- `widgets` tells you whether a widget was generated, attached, served, or skipped
+- `render` tells you when the browser actually rebuilt the focused workspace
+
+That split is meant to reduce speculation when debugging missing panels, stale widgets, silent rerender loops, or inconsistent shared state.
+
 ## Key Files
 
 - [src/server.js](src/server.js): Express app, APIs, SSE, generated widget serving
@@ -209,6 +320,8 @@ http://127.0.0.1:3000
 - [src/services/config-store.js](src/services/config-store.js): persisted config and runtime state
 - [public/app.js](public/app.js): client-side workspace rendering and event handling
 - [public/runtime/widget-bridge.js](public/runtime/widget-bridge.js): iframe bridge for generated widgets
+- [src/lib/logger.js](src/lib/logger.js): structured server logger and env/config overrides
+- [public/runtime/logger.js](public/runtime/logger.js): browser logger with query-param and localStorage overrides
 
 ## Current Limitations
 
