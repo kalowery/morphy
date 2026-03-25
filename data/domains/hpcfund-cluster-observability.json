@@ -15,6 +15,57 @@
   "dataSources": [
     "victoria-cluster"
   ],
+  "analysisRecipe": {
+    "focus": "Summarize the broadest cluster operating picture from the historical VictoriaMetrics evidence.",
+    "blocks": [
+      {
+        "id": "instrumented-host-count",
+        "title": "Instrumented Hosts",
+        "operation": "scalar",
+        "queryName": "instrumentedHostCount",
+        "valueField": "hostCount",
+        "unit": "hosts"
+      },
+      {
+        "id": "cluster-backlog",
+        "title": "Partition Backlog",
+        "operation": "top_entries",
+        "queryName": "pendingJobsByPartition",
+        "labelFields": [
+          "partition"
+        ],
+        "valueField": "pendingJobs",
+        "limit": 3,
+        "sort": "desc"
+      },
+      {
+        "id": "cluster-thermal-outliers",
+        "title": "Thermal Outliers",
+        "operation": "top_entries",
+        "queryName": "hotGpusByTemperature",
+        "labelFields": [
+          "instance",
+          "card"
+        ],
+        "valueField": "temperatureC",
+        "unit": "C",
+        "limit": 3,
+        "sort": "desc"
+      },
+      {
+        "id": "cluster-fabric-risk",
+        "title": "Fabric Risk",
+        "operation": "top_entries",
+        "queryName": "ibErrorScoreByNode",
+        "labelFields": [
+          "instance"
+        ],
+        "valueField": "errorScore",
+        "limit": 3,
+        "sort": "desc"
+      }
+    ]
+  },
   "panels": [
     {
       "id": "fleet-health",
@@ -27,7 +78,71 @@
         "incident-summary"
       ],
       "preferredArchetype": "risk-scoreboard",
-      "archetypeGuidance": "Prefer risk-scoreboard when concrete host ranking is strong. Fall back to incident-summary when evidence is mixed or mostly narrative."
+      "archetypeGuidance": "Prefer risk-scoreboard when concrete host ranking is strong. Fall back to incident-summary when evidence is mixed or mostly narrative.",
+      "analysisRecipe": {
+        "focus": "Rank hosts by cluster health risk using scheduler, storage, fabric, GPU fault, and thermal evidence.",
+        "blocks": [
+          {
+            "id": "instrumented-host-count",
+            "title": "Instrumented Hosts",
+            "operation": "scalar",
+            "queryName": "instrumentedHostCount",
+            "valueField": "hostCount",
+            "unit": "hosts"
+          },
+          {
+            "id": "node-health-risk",
+            "title": "Node Health Risk",
+            "operation": "top_entries",
+            "queryName": "slurmNodeHealthScore",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "healthScore",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "storage-failures",
+            "title": "SMART Failures",
+            "operation": "top_entries",
+            "queryName": "smartFailures",
+            "labelFields": [
+              "instance",
+              "device"
+            ],
+            "valueField": "failures",
+            "limit": 4,
+            "sort": "desc"
+          },
+          {
+            "id": "fabric-risk",
+            "title": "Fabric Risk",
+            "operation": "top_entries",
+            "queryName": "ibErrorScoreByNode",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "errorScore",
+            "limit": 4,
+            "sort": "desc"
+          },
+          {
+            "id": "gpu-thermal-risk",
+            "title": "GPU Thermal Risk",
+            "operation": "top_entries",
+            "queryName": "hotGpusByTemperature",
+            "labelFields": [
+              "instance",
+              "card"
+            ],
+            "valueField": "temperatureC",
+            "unit": "C",
+            "limit": 4,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "scheduler-pressure",
@@ -40,7 +155,47 @@
         "incident-summary"
       ],
       "preferredArchetype": "pressure-board",
-      "archetypeGuidance": "Choose pressure-board when partition backlog and saturation metrics are clear. Use incident-summary only when the evidence is mostly textual."
+      "archetypeGuidance": "Choose pressure-board when partition backlog and saturation metrics are clear. Use incident-summary only when the evidence is mostly textual.",
+      "analysisRecipe": {
+        "focus": "Explain scheduler bottlenecks through backlog and saturation signals by partition.",
+        "blocks": [
+          {
+            "id": "partition-backlog",
+            "title": "Pending Jobs By Partition",
+            "operation": "top_entries",
+            "queryName": "pendingJobsByPartition",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "pendingJobs",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "partition-saturation",
+            "title": "Partition CPU Saturation",
+            "operation": "top_entries",
+            "queryName": "partitionCpuSaturation",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "saturationPercent",
+            "valueTransform": "percent",
+            "unit": "percent",
+            "decimals": 0,
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "instrumented-host-count",
+            "title": "Instrumented Hosts",
+            "operation": "scalar",
+            "queryName": "instrumentedHostCount",
+            "valueField": "hostCount",
+            "unit": "hosts"
+          }
+        ]
+      }
     },
     {
       "id": "gpu-hotspots",
@@ -53,7 +208,68 @@
         "risk-scoreboard"
       ],
       "preferredArchetype": "timeline-analysis",
-      "archetypeGuidance": "Use timeline-analysis when temporal or trend framing is meaningful. Use risk-scoreboard when the story is primarily ranked outliers."
+      "archetypeGuidance": "Use timeline-analysis when temporal or trend framing is meaningful. Use risk-scoreboard when the story is primarily ranked outliers.",
+      "analysisRecipe": {
+        "focus": "Identify the most stressed GPUs through thermal, utilization, VRAM, and occupancy signals.",
+        "blocks": [
+          {
+            "id": "thermal-hotspots",
+            "title": "Thermal Hotspots",
+            "operation": "top_entries",
+            "queryName": "hotGpusByTemperature",
+            "labelFields": [
+              "instance",
+              "card"
+            ],
+            "valueField": "temperatureC",
+            "unit": "C",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "utilization-peaks",
+            "title": "GPU Utilization Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuUtilizationPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "instance"
+            ],
+            "valueField": "utilizationPercent",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "vram-peaks",
+            "title": "GPU VRAM Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuVramPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "instance"
+            ],
+            "valueField": "vramPercent",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "occupancy-peaks",
+            "title": "Compute Occupancy Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuOccupancyPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "instance"
+            ],
+            "valueField": "occupancy",
+            "limit": 5,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "fabric-storage",
@@ -66,7 +282,49 @@
         "incident-summary"
       ],
       "preferredArchetype": "risk-scoreboard",
-      "archetypeGuidance": "Prefer ranked diagnostics when error counters clearly isolate a few nodes. Use incident-summary when evidence is sparse."
+      "archetypeGuidance": "Prefer ranked diagnostics when error counters clearly isolate a few nodes. Use incident-summary when evidence is sparse.",
+      "analysisRecipe": {
+        "focus": "Surface the infrastructure nodes most exposed to fabric or storage degradation.",
+        "blocks": [
+          {
+            "id": "fabric-risk",
+            "title": "InfiniBand Error Leaders",
+            "operation": "top_entries",
+            "queryName": "ibErrorScoreByNode",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "errorScore",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "storage-failures",
+            "title": "SMART Failures",
+            "operation": "top_entries",
+            "queryName": "smartFailures",
+            "labelFields": [
+              "instance",
+              "device"
+            ],
+            "valueField": "failures",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "node-health-risk",
+            "title": "Node Health Risk",
+            "operation": "top_entries",
+            "queryName": "slurmNodeHealthScore",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "healthScore",
+            "limit": 4,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "job-correlation",
@@ -79,7 +337,57 @@
         "incident-summary"
       ],
       "preferredArchetype": "correlation-inspector",
-      "archetypeGuidance": "Prefer correlation-inspector when there are clear host-user-job-partition relationships. Fall back to incident-summary when attribution is weak."
+      "archetypeGuidance": "Prefer correlation-inspector when there are clear host-user-job-partition relationships. Fall back to incident-summary when attribution is weak.",
+      "analysisRecipe": {
+        "focus": "Connect hot or problematic infrastructure to jobs, users, and partitions using node-level workload evidence.",
+        "blocks": [
+          {
+            "id": "recent-jobs",
+            "title": "Recent Jobs By Node",
+            "operation": "top_entries",
+            "queryName": "recentJobsByNode",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "presence",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "job-utilization-peaks",
+            "title": "Job GPU Utilization Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuUtilizationPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "utilizationPercent",
+            "limit": 5,
+            "sort": "desc"
+          },
+          {
+            "id": "job-vram-peaks",
+            "title": "Job GPU VRAM Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuVramPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "vramPercent",
+            "limit": 5,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "job-explorer",
@@ -93,7 +401,86 @@
         "correlation-inspector"
       ],
       "preferredArchetype": "job-detail-sheet",
-      "archetypeGuidance": "Use job-detail-sheet when the analysis can focus on a few jobs. Use timeline-analysis for behavior-over-window stories and correlation-inspector for broader workload attribution."
+      "archetypeGuidance": "Use job-detail-sheet when the analysis can focus on a few jobs. Use timeline-analysis for behavior-over-window stories and correlation-inspector for broader workload attribution.",
+      "analysisRecipe": {
+        "focus": "Build a job-centric evidence pack that highlights specific jobs and their GPU demand signatures.",
+        "blocks": [
+          {
+            "id": "recent-jobs",
+            "title": "Recent Jobs By Node",
+            "operation": "top_entries",
+            "queryName": "recentJobsByNode",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "presence",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "utilization-peaks",
+            "title": "GPU Utilization Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuUtilizationPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "utilizationPercent",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "vram-peaks",
+            "title": "GPU VRAM Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuVramPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "vramPercent",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "occupancy-peaks",
+            "title": "Compute Occupancy Peaks",
+            "operation": "top_entries",
+            "queryName": "jobGpuOccupancyPeak",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "occupancy",
+            "limit": 6,
+            "sort": "desc"
+          },
+          {
+            "id": "thermal-context",
+            "title": "Thermal Context",
+            "operation": "top_entries",
+            "queryName": "hotGpusByTemperature",
+            "labelFields": [
+              "instance",
+              "card"
+            ],
+            "valueField": "temperatureC",
+            "unit": "C",
+            "limit": 4,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "operator-brief",
@@ -106,7 +493,80 @@
         "risk-scoreboard"
       ],
       "preferredArchetype": "incident-summary",
-      "archetypeGuidance": "Prefer incident-summary for handoff-oriented communication. Use risk-scoreboard only when the brief is driven by a very clear ranked set of risks."
+      "archetypeGuidance": "Prefer incident-summary for handoff-oriented communication. Use risk-scoreboard only when the brief is driven by a very clear ranked set of risks.",
+      "analysisRecipe": {
+        "focus": "Assemble the most important handoff evidence across scheduler, thermal, fabric, storage, and workload signals.",
+        "blocks": [
+          {
+            "id": "brief-backlog",
+            "title": "Backlog Leaders",
+            "operation": "top_entries",
+            "queryName": "pendingJobsByPartition",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "pendingJobs",
+            "limit": 3,
+            "sort": "desc"
+          },
+          {
+            "id": "brief-saturation",
+            "title": "Saturation Leaders",
+            "operation": "top_entries",
+            "queryName": "partitionCpuSaturation",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "saturationPercent",
+            "valueTransform": "percent",
+            "unit": "percent",
+            "decimals": 0,
+            "limit": 3,
+            "sort": "desc"
+          },
+          {
+            "id": "brief-thermal",
+            "title": "Thermal Leaders",
+            "operation": "top_entries",
+            "queryName": "hotGpusByTemperature",
+            "labelFields": [
+              "instance",
+              "card"
+            ],
+            "valueField": "temperatureC",
+            "unit": "C",
+            "limit": 3,
+            "sort": "desc"
+          },
+          {
+            "id": "brief-fabric",
+            "title": "Fabric Leaders",
+            "operation": "top_entries",
+            "queryName": "ibErrorScoreByNode",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "errorScore",
+            "limit": 3,
+            "sort": "desc"
+          },
+          {
+            "id": "brief-jobs",
+            "title": "Recent Jobs",
+            "operation": "top_entries",
+            "queryName": "recentJobsByNode",
+            "labelFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "valueField": "presence",
+            "limit": 4,
+            "sort": "desc"
+          }
+        ]
+      }
     }
   ]
 }

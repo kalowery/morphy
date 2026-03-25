@@ -13,6 +13,8 @@ The current prototype is built with Node.js and Express and is centered on a sha
 
 For a fuller system-design treatment, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+Morphy now follows a **tool-first** execution model for analysis: deterministic local server-side tools perform ranking, aggregation, and correlation work first, while the model is reserved primarily for planning, interpretation, confidence handling, and presentation.
+
 ## What Morphy Is Trying To Do
 
 Morphy is designed around a few core ideas:
@@ -80,6 +82,7 @@ This scaffolding gives the UI a dependable starting shape even before any analys
 The server runtime in [src/services/agent-runtime.js](src/services/agent-runtime.js) is responsible for:
 
 - gathering datasource preview context
+- running deterministic local analysis tools over that preview context
 - planning the workspace
 - running per-panel analyses
 - selecting panel archetypes
@@ -87,6 +90,50 @@ The server runtime in [src/services/agent-runtime.js](src/services/agent-runtime
 - optionally delegating widget generation
 
 If `OPENAI_API_KEY` is present, Morphy uses OpenAI through the Node SDK. If no key is present, it falls back to local synthesized output so the app remains explorable.
+
+The current direction is to keep more numerical and relational work local. The model is no longer treated as the place to do basic data reduction when Morphy can do that deterministically on the server first.
+
+### Local Deterministic Tools
+
+Morphy now has a local deterministic tool layer in [src/services/analysis-tools.js](src/services/analysis-tools.js).
+
+The important design detail is that the execution substrate is stable, but the domain-specific tool behavior is increasingly recipe-driven. Domain configs can now declare `analysisRecipe` blocks at both the domain and panel level, and Morphy executes those recipes locally instead of hardcoding every domain-specific summary in application code.
+
+The execution substrate currently supports compact recipe blocks such as:
+
+- `scalar`
+- `top_entries`
+
+Using those primitives, the configured recipes compute compact server-side summaries such as:
+
+- partition backlog leaders
+- saturation leaders
+- GPU hotspot rankings
+- fabric/storage risk leaders
+- recent job-to-node summaries
+- job GPU utilization / VRAM / occupancy leaders
+
+These recipe outputs are then passed into:
+
+- workspace planning
+- archetype selection
+- panel analysis
+- widget generation
+
+This reduces token spend and makes the model focus more on interpretation and presentation than on arithmetic, sorting, and joining.
+
+This is also how Morphy stays metamorphic: the stable runtime knows how to execute the primitives, while the prompt-generated domain config decides which local summaries should exist for the current form of the system.
+
+### Code Interpreter Planning
+
+Morphy does not yet execute Code Interpreter jobs, but the configuration now anticipates that layer. The intent is to use Code Interpreter selectively for:
+
+- ad hoc tabular analysis
+- time-series decomposition
+- artifact generation
+- exploratory job-centric investigations
+
+The aim is to keep deterministic local tools as the default path and reserve Code Interpreter for cases where a richer execution sandbox is genuinely useful.
 
 ### Shared Refresh Model
 

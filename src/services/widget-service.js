@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { paths } from "./config-store.js";
+import { buildDeterministicPanelSummary } from "./analysis-tools.js";
 import { buildArchetypeWidgetContract, getArchetypeDefinition } from "../lib/archetypes.js";
 
 const artifactSchema = {
@@ -104,46 +105,63 @@ function buildWidgetPayload(domain, panel, run, widget = null) {
   };
 }
 
-function compactWidgetContext(context) {
-  return {
-    previews: (context?.previews ?? []).map((preview) => ({
-      sourceId: preview.sourceId,
-      sourceName: preview.sourceName,
-      sourceType: preview.sourceType,
-      status: preview.status,
-      queryWindow: preview.detail?.queryWindow ?? null,
-      queryResults: (preview.detail?.queryResults ?? []).slice(0, 3).map((result) => ({
-        queryName: result.queryName,
-        resultType: result.resultType,
-        resultCount: result.resultCount,
-        sample: (result.sample ?? []).slice(0, 3).map((entry) => ({
-          metric: entry.metric ?? {},
-          value: entry.value
-        }))
-      }))
-    }))
-  };
-}
-
 function compactWidgetRun(run) {
   return {
     id: run.id,
     selectedArchetype: run.selectedArchetype ?? null,
     archetypeTitle: run.archetypeTitle ?? null,
+    archetypeReason: run.archetypeReason ?? null,
+    archetypeConfidence: run.archetypeConfidence ?? null,
     report: {
-      narrative: (run.report?.narrative ?? []).slice(0, 4),
-      highlights: (run.report?.highlights ?? []).slice(0, 6),
+      narrative: (run.report?.narrative ?? []).slice(0, 3),
+      highlights: (run.report?.highlights ?? []).slice(0, 4),
       details: (run.report?.details ?? []).slice(0, 4),
       chart: run.report?.chart
         ? {
-            type: run.report.chart.type,
-            title: run.report.chart.title,
-            labels: (run.report.chart.labels ?? []).slice(0, 8),
-            values: (run.report.chart.values ?? []).slice(0, 8)
-          }
+          type: run.report.chart.type,
+          title: run.report.chart.title,
+          labels: (run.report.chart.labels ?? []).slice(0, 6),
+          values: (run.report.chart.values ?? []).slice(0, 6)
+        }
         : null
     },
-    context: compactWidgetContext(run.context)
+    timestamps: {
+      runUpdatedAt: run.updatedAt ?? null
+    }
+  };
+}
+
+function compactToolSummaryForWidget(summary) {
+  return {
+    panelId: summary?.panelId ?? null,
+    panelTitle: summary?.panelTitle ?? null,
+    coverage: {
+      previewCount: summary?.coverage?.previewCount ?? 0,
+      warningSources: (summary?.coverage?.warningSources ?? []).map((warning) => ({
+        sourceName: warning.sourceName,
+        message: warning.message
+      })),
+      queryWindow: summary?.coverage?.queryWindow ?? null
+    },
+    recipe: {
+      focus: summary?.recipe?.focus ?? "",
+      blocks: (summary?.recipe?.blocks ?? []).map((block) => ({
+        id: block.id,
+        title: block.title,
+        operation: block.operation
+      }))
+    },
+    findings: (summary?.findings ?? []).map((finding) => ({
+      blockId: finding.blockId,
+      title: finding.title,
+      operation: finding.operation,
+      value: finding.value ?? null,
+      displayValue: finding.displayValue ?? null,
+      entries: (finding.entries ?? []).slice(0, 4).map((entry) => ({
+        label: entry.label,
+        displayValue: entry.displayValue
+      }))
+    }))
   };
 }
 
@@ -1024,6 +1042,8 @@ export class WidgetService {
     }, "widgets");
     const archetype = getArchetypeDefinition(appConfig, run.selectedArchetype);
     const widgetContract = buildArchetypeWidgetContract(appConfig, run.selectedArchetype);
+    const panelToolSummary = compactToolSummaryForWidget(buildDeterministicPanelSummary(panel, run.context));
+    const compactRun = compactWidgetRun(run);
     const response = await this.openai.responses.create({
       model: appConfig.codegen?.model ?? "gpt-5.4",
       reasoning: {
@@ -1045,23 +1065,25 @@ export class WidgetService {
           content: [
             {
               type: "input_text",
-              text: `Create a polished browser visualization widget for this analytical panel.\n\nDomain summary:\n${JSON.stringify({
-                id: domain.id,
-                name: domain.name,
-                color: domain.color,
-                icon: domain.icon
-              }, null, 2)}\n\nPanel summary:\n${JSON.stringify({
+              text: `Create a polished browser visualization widget for this analytical panel.\n\nUse the deterministic local evidence as the primary rendering guide. The embedded payload at runtime will contain the full report, context, and theme, so do not assume this prompt is the only available data source.\n\nPanel identity:\n${JSON.stringify({
                 id: panel.id,
                 title: panel.title,
                 summary: panel.summary,
-                chartPreference: panel.chartPreference
+                chartPreference: panel.chartPreference,
+                color: domain.color
               }, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
                 id: run.selectedArchetype,
                 title: run.archetypeTitle,
                 reason: run.archetypeReason,
-                confidence: run.archetypeConfidence,
-                definition: archetype
-              }, null, 2)}\n\nArchetype widget contract:\n${JSON.stringify(widgetContract, null, 2)}\n\nRun summary:\n${JSON.stringify(compactWidgetRun(run), null, 2)}\n\nWidget contract:\n- Render into document.getElementById("app")\n- Use payload.report, payload.context, payload.domain, payload.panel, payload.archetype, and payload.theme\n- Register both onInit and onUpdate handlers\n- Include the archetype's required sections in some form\n- After rendering, emit widget:resize with a height field`
+                confidence: run.archetypeConfidence
+              }, null, 2)}\n\nArchetype widget contract:\n${JSON.stringify({
+                id: widgetContract?.id,
+                title: widgetContract?.title,
+                description: widgetContract?.description,
+                requiredSections: widgetContract?.requiredSections,
+                detailSections: widgetContract?.detailSections,
+                layoutGuidance: widgetContract?.layoutGuidance
+              }, null, 2)}\n\nCompact deterministic evidence:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nCompact run summary:\n${JSON.stringify(compactRun, null, 2)}\n\nWidget contract:\n- Render into document.getElementById("app")\n- Use payload.report, payload.context, payload.domain, payload.panel, payload.archetype, and payload.theme at runtime\n- Register both onInit and onUpdate handlers\n- Include the archetype's required sections in some form\n- After rendering, emit widget:resize with a height field`
             }
           ]
         }

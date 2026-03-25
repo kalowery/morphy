@@ -67,6 +67,25 @@ That avoids:
 - inconsistent user views of the same domain
 - latency spikes caused by every page load triggering fresh reasoning
 
+### Tool-First Analysis
+
+Morphy is moving toward a tool-first model. Deterministic local server-side tools do the ranking, aggregation, correlation, and basic analytical reduction work first. The model is then used mainly for:
+
+- choosing priorities
+- selecting presentation archetypes
+- interpreting evidence
+- producing narratives and detail sections
+- generating presentation artifacts
+
+This separation keeps raw data and heavy computation local while preserving adaptive model behavior where it is most valuable.
+
+The next architectural constraint is equally important: Morphy should not drift into a pile of hardcoded domain helpers. To preserve the metamorphic property of the system, the tool layer is being split into:
+
+- a stable execution substrate in code
+- domain- and panel-level `analysisRecipe` specifications generated or authored in config
+
+That means the runtime owns generic deterministic primitives, while the active domain configuration decides how those primitives are composed for the current form of the system.
+
 ### Reports First, Widgets Second
 
 The primary output of an analysis run is a structured report and native chart. Generated widgets are a secondary artifact attached to the run after the analysis completes.
@@ -101,17 +120,21 @@ Each domain is described in JSON. A domain defines:
 
 - domain identity
 - required datasource ids
+- domain-level analysis recipe
 - panel definitions
 - panel summaries
 - panel analysis prompts
 - preferred chart types
 - per-panel allowed archetypes
+- per-panel analysis recipes
 
 Example:
 
 - [data/domains/hpcfund-cluster-observability.json](data/domains/hpcfund-cluster-observability.json)
 
 This scaffolding is the base structure from which runtime adaptation begins.
+
+The important current shift is that domain configs now describe not only UI scaffolding, but also the domain-specific local analysis behavior. The runtime owns the deterministic primitives; the active domain config owns how they are composed.
 
 ### 3. Datasource Adapters
 
@@ -131,6 +154,7 @@ Primary implementation:
 
 The agent runtime orchestrates:
 
+- deterministic tool summarization
 - workspace planning
 - archetype selection
 - panel analysis
@@ -183,6 +207,32 @@ Primary implementation:
 - [public/index.html](public/index.html)
 - [public/app.js](public/app.js)
 - [public/styles.css](public/styles.css)
+
+### 8. Deterministic Tool Layer
+
+The deterministic tool layer computes local analytical summaries over preview data before model calls are made.
+
+Primary implementation:
+
+- [src/services/analysis-tools.js](src/services/analysis-tools.js)
+
+The substrate now executes recipe blocks such as:
+
+- `scalar`
+- `top_entries`
+
+Domain configs use those primitives to define the actual local analytical summaries for the domain and for each panel. For example, a panel can declare recipe blocks for:
+
+- backlog leaders by partition
+- partition saturation leaders
+- hottest GPUs
+- fabric/storage risk leaders
+- recent jobs by node
+- peak GPU utilization / VRAM / occupancy by job
+
+These outputs are intentionally compact and deterministic so that the model can reason over already-reduced evidence rather than large raw preview blobs.
+
+This is the main mechanism that keeps Morphy metamorphic while still reducing token spend: the code owns the stable execution substrate, while prompt-generated or authored config owns the domain-specific local analytical behavior.
 
 ## Runtime State Model
 
@@ -255,15 +305,17 @@ The current analytical flow is:
 
 1. Refresh coordinator chooses a domain to refresh.
 2. Datasource adapters refresh the domain’s source preview if stale.
-3. Workspace planning is rerun if stale.
-4. The coordinator selects a bounded set of panels for the current sweep.
-5. For each selected panel, Morphy either reuses a fresh run or starts a new analysis run.
-6. The analysis run selects an archetype.
-7. The analysis call returns a report.
-8. The run is marked complete for analysis.
-9. Widget generation starts asynchronously.
-10. The widget artifact is attached to the run when ready.
-11. SSE events notify connected browsers as state changes.
+3. Deterministic local tools summarize the refreshed preview state.
+4. The fallback planner or model-driven planner ranks panels from recipe-derived local evidence.
+5. Workspace planning is rerun if stale.
+6. The coordinator selects a bounded set of panels for the current sweep.
+7. For each selected panel, Morphy either reuses a fresh run or starts a new analysis run.
+8. The analysis run selects an archetype from the allowed set.
+9. The analysis call returns a report using deterministic tool outputs as primary evidence.
+10. The run is marked complete for analysis.
+11. Widget generation starts asynchronously.
+12. The widget artifact is attached to the run when ready.
+13. SSE events notify connected browsers as state changes.
 
 This split is deliberate. Analysis and widget generation are separate phases.
 
@@ -280,6 +332,8 @@ For VictoriaMetrics, the preview may include:
 - a limited sample of result rows
 
 This preview is persisted and reused until its TTL expires.
+
+On top of the preview, Morphy now derives deterministic tool summaries. The preview is the raw local substrate; the tool summary is the reduced evidence passed to the model.
 
 For the HPCFund domain, queries include examples such as:
 
@@ -309,6 +363,8 @@ The planner cannot:
 - bypass panel or domain contracts
 
 The planner’s structured output is interpreted directly by the browser. Human-readable rationale is not used as a machine control surface.
+
+In the current implementation, even the no-model fallback planner is no longer keyed to specific panel ids like `scheduler-pressure` or `gpu-hotspots`. It ranks the configured panels by evidence density from their local recipe outputs, boosts failed or missing runs generically, and produces a bounded workspace plan from that ranking.
 
 ## Archetype Layer
 
@@ -342,6 +398,7 @@ This constrains which presentation families are valid for that panel.
 Before analysis, Morphy chooses one archetype from the allowed set based on:
 
 - current datasource evidence
+- recipe-derived local findings
 - panel purpose
 - preferred archetype
 - confidence in the available signal
@@ -358,6 +415,8 @@ The selected archetype influences:
 
 This is how Morphy turns contextual information into bounded presentation change.
 
+In the current implementation, even heuristic archetype fallback is no longer hardcoded to specific panel ids. It scores the allowed archetypes from recipe metadata, evidence shape, and chart bias, then chooses the highest-scoring allowed archetype.
+
 ## Archetype-Aware Analysis
 
 Morphy no longer treats all analysis output as the same generic structure. Each selected archetype carries a more specific analysis contract.
@@ -370,6 +429,15 @@ The current design is:
 That means Morphy can require a `pressure-board` analysis to produce pressure-oriented sections without forcing one exact metric set or one rigid layout.
 
 This preserves adaptivity while keeping rendering predictable.
+
+Fallback detail synthesis now follows the same principle. When the model output is incomplete, Morphy backfills archetype sections from generic evidence pools built from:
+
+- deterministic recipe findings
+- native chart leaders
+- narrative/highlight text
+- preview coverage notes
+
+That means archetype fallback stays bounded and archetype-specific without reverting to hardcoded panel/query rules.
 
 ## Widget Architecture
 
@@ -457,6 +525,7 @@ Concurrency is bounded by:
 Morphy originally spent too much on large prompts and accumulated history. The current design reduces token usage by:
 
 - summarizing domain context instead of dumping whole objects
+- pushing ranking, aggregation, and correlation work into deterministic local tools
 - trimming datasource context per panel
 - limiting source preview samples
 - compacting workspace plan context
@@ -470,6 +539,31 @@ This improves:
 - responsiveness
 
 without giving up panel relevance.
+
+It also changes where domain specificity lives. Instead of accumulating more fixed helper code in the runtime, Morphy now pushes more domain-specific analytical structure into `analysisRecipe` config and lets the runtime interpret it.
+
+The current target architecture is:
+
+- local tools for computation
+- model for planning and interpretation
+- generated widgets for presentation
+
+## Code Interpreter Outlook
+
+Morphy does not yet depend on Code Interpreter, but the architecture now anticipates it as a future execution tier.
+
+The intended use is selective, not default. Good candidate cases are:
+
+- ad hoc deeper tabular analysis
+- richer time-series decomposition
+- exploratory workload notebooks
+- one-off artifact generation beyond deterministic local tool coverage
+
+The design intent is:
+
+- deterministic local tools first
+- Code Interpreter second when a richer execution sandbox is justified
+- broader Codex App Server style integration later only if the agent-runtime benefits outweigh the added complexity
 
 ## Billing And Cost Tracking
 

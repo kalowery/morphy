@@ -10,12 +10,30 @@
     "model": "gpt-5.4",
     "reasoningEffort": "medium",
     "allowBackground": true,
-    "reuseResponseHistory": false
+    "reuseResponseHistory": false,
+    "localTools": {
+      "enabled": true,
+      "mode": "deterministic",
+      "primaryForPlanning": true,
+      "primaryForAnalysis": true,
+      "primaryForArchetypeSelection": true
+    }
   },
   "codegen": {
     "model": "gpt-5.4",
     "reasoningEffort": "medium",
     "sandboxMode": "iframe"
+  },
+  "codeInterpreter": {
+    "enabled": false,
+    "provider": "openai",
+    "mode": "planned",
+    "intendedUses": [
+      "ad hoc tabular analysis",
+      "time-series decomposition",
+      "artifact generation",
+      "job-centric exploratory notebooks"
+    ]
   },
   "billing": {
     "currency": "USD",
@@ -74,7 +92,8 @@
         "planner",
         "widgets",
         "billing",
-        "datasources"
+        "datasources",
+        "tools"
       ],
       "maxFieldLength": 320
     },

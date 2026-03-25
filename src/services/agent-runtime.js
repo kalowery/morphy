@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import OpenAI from "openai";
 import { gatherDomainContext } from "./data-sources.js";
 import {
+  buildDeterministicDomainSummary,
+  buildDeterministicPanelSummary,
+  getRelevantQueryNamesFromRecipe,
+  listDeterministicTools
+} from "./analysis-tools.js";
+import {
   buildArchetypeAnalysisContract,
   buildArchetypePromptBlock,
   getArchetypeDefinition,
@@ -13,7 +19,7 @@ import {
 const domainSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "name", "description", "color", "icon", "allowedArchetypes", "dataSources", "panels"],
+  required: ["id", "name", "description", "color", "icon", "allowedArchetypes", "dataSources", "analysisRecipe", "panels"],
   properties: {
     id: { type: "string" },
     name: { type: "string" },
@@ -28,6 +34,52 @@ const domainSchema = {
       type: "array",
       items: { type: "string" }
     },
+    analysisRecipe: {
+      type: "object",
+      additionalProperties: false,
+      required: ["focus", "blocks"],
+      properties: {
+        focus: { type: "string" },
+        blocks: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "title", "operation"],
+            properties: {
+              id: { type: "string" },
+              title: { type: "string" },
+              operation: {
+                type: "string",
+                enum: ["scalar", "top_entries"]
+              },
+              description: { type: "string" },
+              queryName: { type: "string" },
+              queryNames: {
+                type: "array",
+                items: { type: "string" }
+              },
+              labelFields: {
+                type: "array",
+                items: { type: "string" }
+              },
+              valueField: { type: "string" },
+              valueTransform: {
+                type: "string",
+                enum: ["identity", "percent"]
+              },
+              unit: { type: "string" },
+              decimals: { type: "integer" },
+              limit: { type: "integer" },
+              sort: {
+                type: "string",
+                enum: ["asc", "desc"]
+              }
+            }
+          }
+        }
+      }
+    },
     panels: {
       type: "array",
       items: {
@@ -41,7 +93,8 @@ const domainSchema = {
           "chartPreference",
           "allowedArchetypes",
           "preferredArchetype",
-          "archetypeGuidance"
+          "archetypeGuidance",
+          "analysisRecipe"
         ],
         properties: {
           id: { type: "string" },
@@ -54,7 +107,53 @@ const domainSchema = {
             items: { type: "string" }
           },
           preferredArchetype: { type: "string" },
-          archetypeGuidance: { type: "string" }
+          archetypeGuidance: { type: "string" },
+          analysisRecipe: {
+            type: "object",
+            additionalProperties: false,
+            required: ["focus", "blocks"],
+            properties: {
+              focus: { type: "string" },
+              blocks: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["id", "title", "operation"],
+                  properties: {
+                    id: { type: "string" },
+                    title: { type: "string" },
+                    operation: {
+                      type: "string",
+                      enum: ["scalar", "top_entries"]
+                    },
+                    description: { type: "string" },
+                    queryName: { type: "string" },
+                    queryNames: {
+                      type: "array",
+                      items: { type: "string" }
+                    },
+                    labelFields: {
+                      type: "array",
+                      items: { type: "string" }
+                    },
+                    valueField: { type: "string" },
+                    valueTransform: {
+                      type: "string",
+                      enum: ["identity", "percent"]
+                    },
+                    unit: { type: "string" },
+                    decimals: { type: "integer" },
+                    limit: { type: "integer" },
+                    sort: {
+                      type: "string",
+                      enum: ["asc", "desc"]
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -130,53 +229,6 @@ const workspacePlanSchema = {
   }
 };
 
-const PANEL_QUERY_PRIORITY = {
-  "fleet-health": [
-    "instrumentedHostCount",
-    "slurmNodeHealthScore",
-    "smartFailures",
-    "ibErrorScoreByNode",
-    "gpuRasUncorrectableByNode",
-    "hotGpusByTemperature"
-  ],
-  "scheduler-pressure": [
-    "pendingJobsByPartition",
-    "partitionCpuSaturation",
-    "instrumentedHostCount"
-  ],
-  "gpu-hotspots": [
-    "hotGpusByTemperature",
-    "jobGpuUtilizationPeak",
-    "jobGpuVramPeak",
-    "jobGpuOccupancyPeak"
-  ],
-  "fabric-storage": [
-    "ibErrorScoreByNode",
-    "smartFailures",
-    "slurmNodeHealthScore"
-  ],
-  "job-correlation": [
-    "recentJobsByNode",
-    "jobGpuUtilizationPeak",
-    "jobGpuVramPeak"
-  ],
-  "job-explorer": [
-    "recentJobsByNode",
-    "jobGpuUtilizationPeak",
-    "jobGpuVramPeak",
-    "jobGpuOccupancyPeak",
-    "hotGpusByTemperature"
-  ],
-  "operator-brief": [
-    "pendingJobsByPartition",
-    "partitionCpuSaturation",
-    "hotGpusByTemperature",
-    "ibErrorScoreByNode",
-    "smartFailures",
-    "recentJobsByNode"
-  ]
-};
-
 function slugify(value) {
   return value
     .toLowerCase()
@@ -192,13 +244,45 @@ function compactDomain(domain) {
     description: domain.description,
     dataSources: domain.dataSources,
     allowedArchetypes: domain.allowedArchetypes ?? [],
+    analysisRecipe: domain.analysisRecipe
+      ? {
+          focus: domain.analysisRecipe.focus,
+          blocks: (domain.analysisRecipe.blocks ?? []).map((block) => ({
+            id: block.id,
+            title: block.title,
+            operation: block.operation,
+            queryName: block.queryName ?? null,
+            queryNames: block.queryNames ?? [],
+            labelFields: block.labelFields ?? [],
+            valueTransform: block.valueTransform ?? "identity",
+            unit: block.unit ?? "",
+            limit: block.limit ?? null
+          }))
+        }
+      : null,
     panels: (domain.panels ?? []).map((panel) => ({
       id: panel.id,
       title: panel.title,
       summary: panel.summary,
       chartPreference: panel.chartPreference,
       allowedArchetypes: panel.allowedArchetypes ?? [],
-      preferredArchetype: panel.preferredArchetype ?? null
+      preferredArchetype: panel.preferredArchetype ?? null,
+      analysisRecipe: panel.analysisRecipe
+        ? {
+            focus: panel.analysisRecipe.focus,
+            blocks: (panel.analysisRecipe.blocks ?? []).map((block) => ({
+              id: block.id,
+              title: block.title,
+              operation: block.operation,
+              queryName: block.queryName ?? null,
+              queryNames: block.queryNames ?? [],
+              labelFields: block.labelFields ?? [],
+              valueTransform: block.valueTransform ?? "identity",
+              unit: block.unit ?? "",
+              limit: block.limit ?? null
+            }))
+          }
+        : null
     }))
   };
 }
@@ -212,7 +296,23 @@ function compactPanel(panel) {
     allowedArchetypes: panel.allowedArchetypes ?? [],
     preferredArchetype: panel.preferredArchetype ?? null,
     archetypeGuidance: panel.archetypeGuidance ?? "",
-    analysisPrompt: panel.analysisPrompt
+    analysisPrompt: panel.analysisPrompt,
+    analysisRecipe: panel.analysisRecipe
+      ? {
+          focus: panel.analysisRecipe.focus,
+          blocks: (panel.analysisRecipe.blocks ?? []).map((block) => ({
+            id: block.id,
+            title: block.title,
+            operation: block.operation,
+            queryName: block.queryName ?? null,
+            queryNames: block.queryNames ?? [],
+            labelFields: block.labelFields ?? [],
+            valueTransform: block.valueTransform ?? "identity",
+            unit: block.unit ?? "",
+            limit: block.limit ?? null
+          }))
+        }
+      : null
   };
 }
 
@@ -271,7 +371,7 @@ function compactQueryResult(result, sampleCount = 4) {
 }
 
 function relevantQueryNamesForPanel(panel) {
-  return PANEL_QUERY_PRIORITY[panel.id] ?? [];
+  return getRelevantQueryNamesFromRecipe(panel?.analysisRecipe);
 }
 
 function compactContextForPanel(panel, context) {
@@ -359,6 +459,21 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
       .toUpperCase(),
     allowedArchetypes: Object.keys(getArchetypeRegistry(appConfig).library),
     dataSources: sourceIds,
+    analysisRecipe: {
+      focus: "Summarize the broadest operating picture from local preview evidence.",
+      blocks: [
+        {
+          id: "overview-signals",
+          title: "Overview Signals",
+          operation: "top_entries",
+          queryName: "pendingJobsByPartition",
+          labelFields: ["partition"],
+          valueField: "pendingJobs",
+          limit: 3,
+          sort: "desc"
+        }
+      ]
+    },
     panels: [
       {
         id: "overview",
@@ -368,7 +483,22 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
         chartPreference: "bar",
         allowedArchetypes: ["incident-summary", "risk-scoreboard"],
         preferredArchetype: "incident-summary",
-        archetypeGuidance: "Use incident-summary for broad synthesis and risk-scoreboard when ranked outliers dominate."
+        archetypeGuidance: "Use incident-summary for broad synthesis and risk-scoreboard when ranked outliers dominate.",
+        analysisRecipe: {
+          focus: "Summarize the main signals visible in the local preview results.",
+          blocks: [
+            {
+              id: "overview-signals",
+              title: "Overview Signals",
+              operation: "top_entries",
+              queryName: "pendingJobsByPartition",
+              labelFields: ["partition"],
+              valueField: "pendingJobs",
+              limit: 4,
+              sort: "desc"
+            }
+          ]
+        }
       },
       {
         id: "anomalies",
@@ -378,7 +508,23 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
         chartPreference: "line",
         allowedArchetypes: ["risk-scoreboard", "timeline-analysis"],
         preferredArchetype: "risk-scoreboard",
-        archetypeGuidance: "Use timeline-analysis only when the anomaly story is fundamentally temporal."
+        archetypeGuidance: "Use timeline-analysis only when the anomaly story is fundamentally temporal.",
+        analysisRecipe: {
+          focus: "Surface the strongest outlier signals from local preview results.",
+          blocks: [
+            {
+              id: "anomaly-signals",
+              title: "Anomaly Signals",
+              operation: "top_entries",
+              queryName: "hotGpusByTemperature",
+              labelFields: ["instance", "card"],
+              valueField: "temperatureC",
+              unit: "C",
+              limit: 4,
+              sort: "desc"
+            }
+          ]
+        }
       },
       {
         id: "briefing",
@@ -388,7 +534,22 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
         chartPreference: "donut",
         allowedArchetypes: ["incident-summary"],
         preferredArchetype: "incident-summary",
-        archetypeGuidance: "Keep the briefing narrative-first."
+        archetypeGuidance: "Keep the briefing narrative-first.",
+        analysisRecipe: {
+          focus: "Collect the highest-priority evidence for a brief operational handoff.",
+          blocks: [
+            {
+              id: "brief-signals",
+              title: "Brief Signals",
+              operation: "top_entries",
+              queryName: "pendingJobsByPartition",
+              labelFields: ["partition"],
+              valueField: "pendingJobs",
+              limit: 3,
+              sort: "desc"
+            }
+          ]
+        }
       }
     ]
   };
@@ -421,18 +582,6 @@ function buildFallbackReport(panel, context) {
       values: metricEntries.map(([, metric]) => metric.average)
     }
   };
-}
-
-function getQuerySample(context, queryName) {
-  for (const preview of context.previews ?? []) {
-    for (const result of preview.detail?.queryResults ?? []) {
-      if (result.queryName === queryName) {
-        return result.sample ?? [];
-      }
-    }
-  }
-
-  return [];
 }
 
 function panelIds(domain) {
@@ -478,60 +627,70 @@ function normalizeWorkspacePlan(domain, parsed, preferredPanelId = null) {
 }
 
 function buildFallbackWorkspacePlan(domain, context, recentRuns = [], preferredPanelId = null) {
-  const backlog = getQuerySample(context, "pendingJobsByPartition");
-  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
-  const fabricRisk = getQuerySample(context, "ibErrorScoreByNode");
-  const recommendedActions = [];
-  let focusPanelId = preferredPanelId && panelIds(domain).includes(preferredPanelId) ? preferredPanelId : domain.panels[0]?.id ?? "";
-  let rationale = "Workspace remains centered on the default domain priorities.";
-
-  if (!preferredPanelId) {
-    const topBacklog = backlog
-      .map((entry) => Number(entry.value))
-      .filter((value) => Number.isFinite(value))
-      .sort((left, right) => right - left)[0] ?? 0;
-    const topGpuTemp = hotGpus
-      .map((entry) => Number(entry.value))
-      .filter((value) => Number.isFinite(value))
-      .sort((left, right) => right - left)[0] ?? 0;
-    const topFabricSignal = fabricRisk
-      .map((entry) => Number(entry.value))
-      .filter((value) => Number.isFinite(value))
-      .sort((left, right) => right - left)[0] ?? 0;
-
-    if (topBacklog >= 20 && panelIds(domain).includes("scheduler-pressure")) {
-      focusPanelId = "scheduler-pressure";
-      rationale = "Scheduler pressure has been promoted because queue backlog is concentrated in a few partitions.";
-      recommendedActions.push("Inspect partition backlog and saturation before drilling into host-level symptoms.");
-    } else if (topGpuTemp >= 78 && panelIds(domain).includes("gpu-hotspots")) {
-      focusPanelId = "gpu-hotspots";
-      rationale = "GPU hotspots have been promoted because the current window shows elevated thermal outliers.";
-      recommendedActions.push("Inspect the hottest accelerators and correlate them with job placement.");
-    } else if (topFabricSignal > 0 && panelIds(domain).includes("fabric-storage")) {
-      focusPanelId = "fabric-storage";
-      rationale = "Fabric and storage signals were promoted because non-zero infrastructure error counters are present.";
-      recommendedActions.push("Check the highest-error nodes before assuming the issue is only scheduler-related.");
-    } else if (panelIds(domain).includes("fleet-health")) {
-      focusPanelId = "fleet-health";
-      rationale = "Fleet Health stays in focus because it best summarizes the current operating picture.";
+  const latestRunsByPanel = new Map();
+  for (const run of recentRuns) {
+    const current = latestRunsByPanel.get(run.panelId);
+    if (!current || new Date(run.updatedAt ?? 0).getTime() > new Date(current.updatedAt ?? 0).getTime()) {
+      latestRunsByPanel.set(run.panelId, run);
     }
   }
 
-  if (!recommendedActions.length && recentRuns.some((run) => run.status === "failed")) {
+  const panelScores = domain.panels.map((panel) => {
+    const summary = buildDeterministicPanelSummary(panel, context);
+    const findings = Array.isArray(summary.findings) ? summary.findings : [];
+    const rankedFindings = findings.filter((finding) => finding.operation === "top_entries");
+    const scalarFindings = findings.filter((finding) => finding.operation === "scalar");
+    const rankedEntryCount = rankedFindings.reduce((count, finding) => count + (finding.entries?.length ?? 0), 0);
+    const nonZeroScalarCount = scalarFindings.filter((finding) => Number(finding.value) !== 0).length;
+    const warningCount = summary.coverage?.warningSources?.length ?? 0;
+    const latestRun = latestRunsByPanel.get(panel.id) ?? null;
+    const failedBonus = latestRun?.status === "failed" ? 2 : 0;
+    const staleBonus = !latestRun || latestRun.status !== "completed" ? 1 : 0;
+    const score = rankedEntryCount * 3 + nonZeroScalarCount * 2 + failedBonus + staleBonus - warningCount;
+
+    return {
+      panel,
+      summary,
+      latestRun,
+      rankedEntryCount,
+      nonZeroScalarCount,
+      warningCount,
+      score
+    };
+  });
+
+  const sortedPanels = [...panelScores].sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return left.panel.title.localeCompare(right.panel.title);
+  });
+  const recommendedActions = [];
+  const preferredFocus = preferredPanelId && panelIds(domain).includes(preferredPanelId) ? preferredPanelId : null;
+  const topPanel = sortedPanels[0] ?? null;
+  const focusPanelId = preferredFocus ?? topPanel?.panel.id ?? domain.panels[0]?.id ?? "";
+  const focusPanel = sortedPanels.find((entry) => entry.panel.id === focusPanelId) ?? topPanel;
+  let rationale = "Workspace remains centered on the configured domain panels.";
+
+  if (!preferredFocus && focusPanel) {
+    rationale = `${focusPanel.panel.title} has been promoted because its configured local analysis recipe currently yields the strongest evidence density.`;
+    recommendedActions.push(`Use ${focusPanel.panel.title} as the verification anchor; its local recipe surfaced the strongest current evidence.`);
+  }
+
+  if (focusPanel?.warningCount) {
+    recommendedActions.push(`Validate datasource readiness before over-trusting ${focusPanel.panel.title}; some preview sources reported warnings.`);
+  }
+
+  if (recentRuns.some((run) => run.status === "failed")) {
     recommendedActions.push("Re-run failed panels after reviewing datasource readiness and widget generation state.");
   }
 
-  const preferredOrder = [
+  const rankedPanelIds = sortedPanels.map((entry) => entry.panel.id);
+  const visiblePanelIds = [
     focusPanelId,
-    "fleet-health",
-    "scheduler-pressure",
-    "gpu-hotspots",
-    "job-explorer",
-    "fabric-storage",
-    "job-correlation",
-    "operator-brief"
-  ].filter((panelId, index, values) => panelId && values.indexOf(panelId) === index && panelIds(domain).includes(panelId));
-  const visiblePanelIds = preferredOrder.concat(panelIds(domain).filter((panelId) => !preferredOrder.includes(panelId)));
+    ...rankedPanelIds.filter((panelId) => panelId !== focusPanelId),
+    ...panelIds(domain).filter((panelId) => !rankedPanelIds.includes(panelId) && panelId !== focusPanelId)
+  ].filter((panelId, index, values) => panelId && values.indexOf(panelId) === index);
 
   return normalizeWorkspacePlan(
     domain,
@@ -647,191 +806,117 @@ function topChartPairs(report, count = 4) {
     .slice(0, count);
 }
 
-function toDetailItems(entries, formatter = (entry) => `${entry.label}: ${entry.numericValue}`) {
-  return entries.map((entry) => formatter(entry));
+function buildEvidencePools({ panel, report, context }) {
+  const summary = buildDeterministicPanelSummary(panel, context);
+  const findings = Array.isArray(summary.findings) ? summary.findings : [];
+  const recipeText = [
+    panel?.analysisRecipe?.focus ?? "",
+    ...((panel?.analysisRecipe?.blocks ?? []).flatMap((block) => [
+      block.title ?? "",
+      block.description ?? "",
+      block.queryName ?? "",
+      ...(block.queryNames ?? [])
+    ]))
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const rankedFindings = findings.filter((finding) => finding.operation === "top_entries");
+  const scalarFindings = findings.filter((finding) => finding.operation === "scalar");
+  const rankedItems = rankedFindings.flatMap((finding) =>
+    (finding.entries ?? []).map((entry) => ({
+      label: String(entry.label ?? "unknown"),
+      displayValue: String(entry.displayValue ?? entry.value ?? ""),
+      text: `${entry.label ?? "unknown"}: ${entry.displayValue ?? entry.value ?? ""}`,
+      queryName: entry.queryName ?? null,
+      title: finding.title
+    }))
+  );
+  const scalarItems = scalarFindings.map((finding) => ({
+    text: `${finding.title}: ${finding.displayValue}`,
+    title: finding.title
+  }));
+  const chartItems = topChartPairs(report).map((entry) => `${entry.label}: ${entry.numericValue}`);
+  const narrativeItems = [...(report.highlights ?? []), ...(report.narrative ?? [])].map(String).filter(Boolean);
+  const coverageItems = [
+    ...(summary.coverage?.warningSources ?? []).map((warning) => `${warning.sourceName}: ${warning.message}`),
+    summary.coverage?.queryWindow?.evaluationTime ? `Evidence window anchored at ${summary.coverage.queryWindow.evaluationTime}.` : null
+  ].filter(Boolean);
+
+  const jobItems = rankedItems.filter((item) => /job|user|partition/i.test(item.text) || /job|user|partition/i.test(recipeText));
+  const partitionItems = rankedItems.filter((item) => /partition/i.test(item.text) || /partition|backlog|saturation|pressure|capacity/i.test(recipeText));
+  const percentItems = rankedItems.filter((item) => /%|percent/i.test(item.displayValue));
+
+  return {
+    recipeText,
+    rankedItems,
+    scalarItems,
+    chartItems,
+    narrativeItems,
+    coverageItems,
+    jobItems,
+    partitionItems,
+    percentItems
+  };
 }
 
-function buildArchetypeDetails({ run, report, context }) {
-  const archetype = run.selectedArchetype ?? "incident-summary";
-  const chartTop = topChartPairs(report);
-  const pendingJobs = getQuerySample(context, "pendingJobsByPartition");
-  const saturation = getQuerySample(context, "partitionCpuSaturation");
-  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
-  const recentJobs = getQuerySample(context, "recentJobsByNode");
-  const jobGpuUtilization = getQuerySample(context, "jobGpuUtilizationPeak");
-  const jobGpuVram = getQuerySample(context, "jobGpuVramPeak");
-  const fabricRisk = getQuerySample(context, "ibErrorScoreByNode");
+function uniqueItems(items = [], limit = 5) {
+  return [...new Set(items.filter(Boolean))].slice(0, limit);
+}
 
-  if (archetype === "pressure-board") {
-    return [
-      {
-        sectionId: "pressure-metrics",
-        title: "Pressure Metrics",
-        items: toDetailItems(
-          saturation
-            .map((entry) => ({
-              label: entry.metric?.partition ?? "unknown",
-              numericValue: Number(entry.value)
-            }))
-            .filter((entry) => Number.isFinite(entry.numericValue))
-            .sort((left, right) => right.numericValue - left.numericValue)
-            .slice(0, 4),
-          (entry) => `${entry.label}: ${(entry.numericValue * 100).toFixed(0)}% saturation`
-        )
-      },
-      {
-        sectionId: "backlog-board",
-        title: "Backlog Board",
-        items: toDetailItems(
-          pendingJobs
-            .map((entry) => ({
-              label: entry.metric?.partition ?? "unknown",
-              numericValue: Number(entry.value)
-            }))
-            .filter((entry) => Number.isFinite(entry.numericValue))
-            .sort((left, right) => right.numericValue - left.numericValue)
-            .slice(0, 4),
-          (entry) => `${entry.label}: ${entry.numericValue} pending`
-        )
-      },
-      {
-        sectionId: "capacity-notes",
-        title: "Capacity Notes",
-        items: (report.highlights ?? []).slice(0, 4)
-      }
-    ];
+function sectionItemsForArchetype(sectionId, pools) {
+  const ranked = uniqueItems([...pools.rankedItems.map((item) => item.text), ...pools.chartItems], 5);
+  const notes = uniqueItems([...pools.narrativeItems, ...pools.coverageItems], 4);
+  const jobs = uniqueItems(pools.jobItems.map((item) => item.text), 5);
+  const partition = uniqueItems(
+    [...pools.percentItems.map((item) => item.text), ...pools.partitionItems.map((item) => item.text)],
+    5
+  );
+  const scalar = uniqueItems(pools.scalarItems.map((item) => item.text), 4);
+
+  switch (sectionId) {
+    case "pressure-metrics":
+      return partition.length ? partition : ranked;
+    case "backlog-board":
+      return uniqueItems([...pools.partitionItems.map((item) => item.text), ...ranked], 5);
+    case "capacity-notes":
+    case "triage-summary":
+    case "operator-notes":
+    case "timeline-overview":
+    case "trend-notes":
+    case "briefing":
+    case "actions":
+    case "confidence-notes":
+    case "candidate-drilldowns":
+    case "attribution-notes":
+      return notes.length ? notes : ranked;
+    case "ranked-signals":
+    case "peak-metrics":
+    case "evidence-matrix":
+    case "resource-profile":
+      return ranked.length ? ranked : [...scalar, ...notes];
+    case "entity-links":
+    case "job-header":
+      return jobs.length ? jobs : ranked;
+    default:
+      return ranked.length ? ranked : [...scalar, ...notes];
+  }
+}
+
+function buildArchetypeDetails({ appConfig, panel, run, report, context }) {
+  const contract = buildArchetypeAnalysisContract(appConfig, run.selectedArchetype ?? "incident-summary");
+  if (!contract?.detailSections?.length) {
+    return [];
   }
 
-  if (archetype === "risk-scoreboard") {
-    return [
-      {
-        sectionId: "ranked-signals",
-        title: "Ranked Signals",
-        items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
-      },
-      {
-        sectionId: "triage-summary",
-        title: "Triage Summary",
-        items: (report.highlights ?? []).slice(0, 4)
-      },
-      {
-        sectionId: "operator-notes",
-        title: "Operator Notes",
-        items: (report.highlights ?? []).slice(0, 4)
-      }
-    ];
-  }
-
-  if (archetype === "timeline-analysis") {
-    return [
-      {
-        sectionId: "timeline-overview",
-        title: "Timeline Overview",
-        items: (report.highlights ?? []).slice(0, 3)
-      },
-      {
-        sectionId: "peak-metrics",
-        title: "Peak Metrics",
-        items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
-      },
-      {
-        sectionId: "trend-notes",
-        title: "Trend Notes",
-        items: (report.narrative ?? []).slice(0, 3)
-      }
-    ];
-  }
-
-  if (archetype === "correlation-inspector") {
-    return [
-      {
-        sectionId: "entity-links",
-        title: "Entity Links",
-        items: recentJobs.slice(0, 5).map((entry) => {
-          const metric = entry.metric ?? {};
-          return `${metric.user ?? "unknown"} · job ${metric.jobid ?? "?"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
-        })
-      },
-      {
-        sectionId: "evidence-matrix",
-        title: "Evidence Matrix",
-        items: (report.highlights ?? []).slice(0, 4)
-      },
-      {
-        sectionId: "attribution-notes",
-        title: "Attribution Notes",
-        items: (report.highlights ?? []).slice(0, 4)
-      }
-    ];
-  }
-
-  if (archetype === "job-detail-sheet") {
-    return [
-      {
-        sectionId: "job-header",
-        title: "Job Header",
-        items: recentJobs.slice(0, 5).map((entry) => {
-          const metric = entry.metric ?? {};
-          return `job ${metric.jobid ?? "?"} · ${metric.user ?? "unknown"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
-        })
-      },
-      {
-        sectionId: "resource-profile",
-        title: "Resource Profile",
-        items: [
-          ...jobGpuUtilization.slice(0, 2).map((entry) => `GPU utilization peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(0)}%`),
-          ...jobGpuVram.slice(0, 2).map((entry) => `VRAM peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(1)}%`)
-        ].slice(0, 4)
-      },
-      {
-        sectionId: "candidate-drilldowns",
-        title: "Candidate Drilldowns",
-        items: (report.highlights ?? []).slice(0, 4)
-      }
-    ];
-  }
-
-  if (archetype === "incident-summary") {
-    return [
-      {
-        sectionId: "briefing",
-        title: "Briefing",
-        items: (report.narrative ?? []).slice(0, 3)
-      },
-      {
-        sectionId: "actions",
-        title: "Actions",
-        items: (report.highlights ?? []).slice(0, 4)
-      },
-      {
-        sectionId: "confidence-notes",
-        title: "Confidence Notes",
-        items: (report.narrative ?? []).slice(0, 2)
-      }
-    ];
-  }
-
-  if (fabricRisk.length) {
-      return [
-        {
-          sectionId: "ranked-signals",
-          title: "Infrastructure Signals",
-          items: fabricRisk.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"}: ${Number(entry.value).toFixed(0)}`)
-        }
-    ];
-  }
-
-  if (hotGpus.length) {
-      return [
-        {
-          sectionId: "peak-metrics",
-          title: "Thermal Signals",
-          items: hotGpus.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"} card ${entry.metric?.card ?? "?"}: ${Number(entry.value).toFixed(0)}C`)
-        }
-    ];
-  }
-
-  return [];
+  const pools = buildEvidencePools({ panel, report, context });
+  return contract.detailSections
+    .map((section) => ({
+      sectionId: section.id,
+      title: section.title,
+      items: sectionItemsForArchetype(section.id, pools).slice(0, section.maxItems ?? 5)
+    }))
+    .filter((section) => section.items.length);
 }
 
 function pickAvailableArchetype(allowedArchetypes, preferredArchetype, fallbackArchetype) {
@@ -849,50 +934,51 @@ function pickAvailableArchetype(allowedArchetypes, preferredArchetype, fallbackA
 function selectHeuristicArchetype({ appConfig, domain, panel, context }) {
   const allowedArchetypes = getPanelAllowedArchetypes(appConfig, domain, panel);
   const preferredArchetype = getPreferredArchetype(appConfig, domain, panel);
-  const pendingJobs = getQuerySample(context, "pendingJobsByPartition");
-  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
-  const jobSignals = getQuerySample(context, "recentJobsByNode");
-  const gpuJobSignals = [
-    ...getQuerySample(context, "jobGpuUtilizationPeak"),
-    ...getQuerySample(context, "jobGpuVramPeak"),
-    ...getQuerySample(context, "jobGpuOccupancyPeak")
-  ];
-  const fabricSignals = getQuerySample(context, "ibErrorScoreByNode");
+  const evidence = buildEvidencePools({ panel, report: { chart: { labels: [], values: [] }, highlights: [], narrative: [] }, context });
+  const hasStructuredRankings = evidence.rankedItems.length >= 3;
+  const hasJobLinks = evidence.jobItems.length >= 2;
+  const hasPartitionPressure = evidence.partitionItems.length >= 2 || evidence.percentItems.length >= 2;
+  const hasLineBias = panel.chartPreference === "line";
+  const focusText = (panel.analysisRecipe?.focus ?? "").toLowerCase();
 
-  let selectedArchetype = preferredArchetype;
-  let reason = "Using the panel's preferred archetype because the current evidence does not strongly favor another allowed presentation mode.";
-  let confidence = "medium";
+  const scores = new Map(allowedArchetypes.map((id) => [id, id === preferredArchetype ? 2 : 0]));
+  if (scores.has("pressure-board") && hasPartitionPressure) scores.set("pressure-board", scores.get("pressure-board") + 4);
+  if (scores.has("correlation-inspector") && hasJobLinks) scores.set("correlation-inspector", scores.get("correlation-inspector") + 4);
+  if (scores.has("job-detail-sheet") && hasJobLinks) scores.set("job-detail-sheet", scores.get("job-detail-sheet") + 3);
+  if (scores.has("timeline-analysis") && (hasLineBias || /trend|timeline|window|over time|history/i.test(focusText))) {
+    scores.set("timeline-analysis", scores.get("timeline-analysis") + 3);
+  }
+  if (scores.has("risk-scoreboard") && hasStructuredRankings) scores.set("risk-scoreboard", scores.get("risk-scoreboard") + 3);
+  if (scores.has("incident-summary")) scores.set("incident-summary", scores.get("incident-summary") + (evidence.narrativeItems.length ? 2 : 1));
 
-  if (panel.id === "scheduler-pressure" && pendingJobs.length) {
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "pressure-board", preferredArchetype);
-    reason = "Pending-job and saturation evidence make a pressure-board the clearest allowed presentation for scheduler bottlenecks.";
-    confidence = "high";
-  } else if (panel.id === "gpu-hotspots" && hotGpus.length) {
-    const fallback = panel.chartPreference === "line" ? "timeline-analysis" : "risk-scoreboard";
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, preferredArchetype, fallback);
-    reason = "The current hotspot evidence is dominated by ranked thermal outliers and trend-like comparisons across GPUs.";
-    confidence = "high";
-  } else if (panel.id === "job-correlation" && (jobSignals.length || gpuJobSignals.length)) {
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "correlation-inspector", preferredArchetype);
-    reason = "Cross-linked job, user, and node evidence supports a correlation-oriented archetype.";
-    confidence = "medium";
-  } else if (panel.id === "job-explorer" && gpuJobSignals.length) {
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "job-detail-sheet", preferredArchetype);
-    reason = "The current preview includes enough job-to-GPU evidence to support a job-centric detail sheet.";
-    confidence = "medium";
-  } else if ((panel.id === "fleet-health" || panel.id === "fabric-storage") && (hotGpus.length || fabricSignals.length)) {
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "risk-scoreboard", preferredArchetype);
-    reason = "The current evidence is strongest when presented as ranked host or infrastructure risks.";
-    confidence = "medium";
-  } else if (panel.id === "operator-brief") {
-    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "incident-summary", preferredArchetype);
-    reason = "Operator handoff panels should remain narrative-first unless a stronger allowed archetype is explicitly justified.";
-    confidence = "high";
+  const ranked = [...scores.entries()].sort((left, right) => right[1] - left[1]);
+  const [selectedArchetype] = ranked[0] ?? [pickAvailableArchetype(allowedArchetypes, preferredArchetype, null)];
+  const secondScore = ranked[1]?.[1] ?? -Infinity;
+  const topScore = ranked[0]?.[1] ?? 0;
+  const confidence = topScore - secondScore >= 3 ? "high" : topScore - secondScore >= 1 ? "medium" : "low";
+  const reasonParts = [];
+  if (selectedArchetype === preferredArchetype) {
+    reasonParts.push("The preferred archetype remains aligned with the configured recipe focus.");
+  }
+  if (selectedArchetype === "pressure-board" && hasPartitionPressure) {
+    reasonParts.push("Recipe evidence is dominated by backlog or saturation style partition signals.");
+  }
+  if ((selectedArchetype === "correlation-inspector" || selectedArchetype === "job-detail-sheet") && hasJobLinks) {
+    reasonParts.push("The local evidence contains clear multi-entity job, user, partition, or host links.");
+  }
+  if (selectedArchetype === "timeline-analysis" && hasLineBias) {
+    reasonParts.push("The panel is configured for line-oriented presentation and temporal interpretation.");
+  }
+  if (selectedArchetype === "risk-scoreboard" && hasStructuredRankings) {
+    reasonParts.push("The strongest local evidence is a ranked set of outliers or leaders.");
+  }
+  if (!reasonParts.length) {
+    reasonParts.push("No stronger evidence pattern displaced the preferred allowed archetype.");
   }
 
   return {
     selectedArchetype,
-    reason,
+    reason: reasonParts.join(" "),
     confidence
   };
 }
@@ -956,7 +1042,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Available data sources:\n${JSON.stringify(dataSources, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nEvery panel must declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.`
+              text: `Available data sources:\n${JSON.stringify(dataSources, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.`
             }
           ]
         }
@@ -1003,6 +1089,7 @@ export class AgentRuntime {
     const plannerContext = compactContextForPlanner(context);
     const plannerDomain = compactDomain(domain);
     const plannerRuns = compactRecentRuns(recentRuns);
+    const plannerToolSummary = buildDeterministicDomainSummary(domain, context);
     this.logger.info("Planning workspace", {
       domainId,
       preferredPanelId,
@@ -1045,7 +1132,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
+              text: `You are planning workspace priority, not doing raw numerical analysis. Use the local deterministic tool outputs as the primary evidence source and use the minimal preview summary only for grounding.\n\nAvailable local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(plannerToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
             }
           ]
         }
@@ -1096,6 +1183,7 @@ export class AgentRuntime {
     const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
     const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
     const compactContext = compactContextForPanel(panel, context);
+    const panelToolSummary = buildDeterministicPanelSummary(panel, context);
 
     if (!this.openai) {
       return fallback;
@@ -1123,7 +1211,7 @@ export class AgentRuntime {
             content: [
               {
                 type: "input_text",
-                text: `Domain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\nPick the best archetype from the allowed set for the current evidence.`
+                text: `Pick the best archetype from the allowed set using the deterministic local tool output as the primary evidence source.\n\nAvailable local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}`
               }
             ]
           }
@@ -1246,6 +1334,8 @@ export class AgentRuntime {
     const analysisDomain = compactDomain(domain);
     const analysisPanel = compactPanel(panel);
     const analysisWorkspacePlan = compactWorkspacePlan(workspacePlan, panel.id);
+    const analysisDomainTools = buildDeterministicDomainSummary(domain, context);
+    const analysisPanelTools = buildDeterministicPanelSummary(panel, context);
     this.logger.info("Starting panel analysis", {
       domainId,
       panelId,
@@ -1283,7 +1373,7 @@ export class AgentRuntime {
       run.report.details = mergeArchetypeDetails(
         analysisContract,
         run.report.details,
-        buildArchetypeDetails({ run, report: run.report, context: run.context })
+        buildArchetypeDetails({ appConfig, panel, run, report: run.report, context: run.context })
       );
       run.widgetStatus = "pending";
     }
@@ -1317,7 +1407,7 @@ export class AgentRuntime {
               {
                 type: "input_text",
                 text:
-                  "You are an analytical backend. Return strict JSON with keys narrative, highlights, details, and chart. The details array is required for the selected archetype. The chart object must contain type, title, labels, and values."
+                  "You are an analytical backend. Local deterministic tools have already computed the numerical and ranking work. Your job is planning, interpretation, confidence handling, and presentation. Return strict JSON with keys narrative, highlights, details, and chart. The details array is required for the selected archetype. The chart object must contain type, title, labels, and values."
               }
           ]
         },
@@ -1326,13 +1416,13 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+              text: `Available local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
                 id: run.selectedArchetype,
                 title: run.archetypeTitle,
                 reason: run.archetypeReason,
                 confidence: run.archetypeConfidence,
                 allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
-              }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nCurrent source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
+              }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
             }
           ]
         }
@@ -1459,19 +1549,20 @@ export class AgentRuntime {
     }
 
     run.status = "completed";
-    const analysisContract = buildArchetypeAnalysisContract(await this.configStore.getAppConfig(), run.selectedArchetype);
+    const currentAppConfig = await this.configStore.getAppConfig();
+    const analysisContract = buildArchetypeAnalysisContract(currentAppConfig, run.selectedArchetype);
     const preliminaryReport = normalizeReport(parsed, panel);
     run.report = normalizeReport(
       parsed,
       panel,
       analysisContract,
-      buildArchetypeDetails({ run, report: preliminaryReport, context: run.context })
+      buildArchetypeDetails({ appConfig: currentAppConfig, panel, run, report: preliminaryReport, context: run.context })
     );
     const missingSections = missingArchetypeSections(analysisContract, run.report.details);
     if (!run.billing?.analysisEntryId) {
       const entry = await this.billingTracker?.recordResponseUsage({
         response,
-        model: (await this.configStore.getAppConfig()).agent?.model ?? "gpt-5.4",
+        model: currentAppConfig.agent?.model ?? "gpt-5.4",
         operation: "panel_analysis",
         provider: "openai-responses",
         domainId: run.domainId,

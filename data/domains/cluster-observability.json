@@ -4,32 +4,125 @@
   "description": "Operational monitoring and anomaly triage for large-scale compute clusters.",
   "color": "#6ee7b7",
   "icon": "CO",
+  "allowedArchetypes": [
+    "risk-scoreboard",
+    "pressure-board",
+    "incident-summary",
+    "timeline-analysis"
+  ],
   "dataSources": [
     "cluster-inventory",
     "victoria-cluster"
   ],
+  "analysisRecipe": {
+    "focus": "Summarize the broadest cluster operating picture from the configured local previews.",
+    "blocks": [
+      {
+        "id": "overview-signals",
+        "title": "Overview Signals",
+        "operation": "top_entries",
+        "queryName": "pendingJobsByPartition",
+        "labelFields": [
+          "partition"
+        ],
+        "valueField": "pendingJobs",
+        "limit": 3,
+        "sort": "desc"
+      }
+    ]
+  },
   "panels": [
     {
       "id": "fleet-health",
       "title": "Fleet Health",
       "summary": "Rank clusters and hosts by operational risk and stability trends.",
       "analysisPrompt": "Assess fleet-wide health, identify the highest-risk hosts, and explain what should be investigated first.",
-      "chartPreference": "bar"
+      "chartPreference": "bar",
+      "allowedArchetypes": [
+        "risk-scoreboard",
+        "incident-summary"
+      ],
+      "preferredArchetype": "risk-scoreboard",
+      "archetypeGuidance": "Prefer ranked host risk when evidence is concrete and incident-summary when the picture is more mixed.",
+      "analysisRecipe": {
+        "focus": "Rank hosts and clusters by risk signals visible in local preview data.",
+        "blocks": [
+          {
+            "id": "health-signals",
+            "title": "Health Signals",
+            "operation": "top_entries",
+            "queryName": "slurmNodeHealthScore",
+            "labelFields": [
+              "instance"
+            ],
+            "valueField": "healthScore",
+            "limit": 5,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "capacity-pressure",
       "title": "Capacity Pressure",
       "summary": "Highlight CPU, memory, and disk hotspots that are likely to affect users.",
       "analysisPrompt": "Explain which hosts or clusters are under the highest resource pressure and suggest prioritization for operators.",
-      "chartPreference": "line"
+      "chartPreference": "line",
+      "allowedArchetypes": [
+        "pressure-board",
+        "timeline-analysis"
+      ],
+      "preferredArchetype": "pressure-board",
+      "archetypeGuidance": "Use pressure-board for current bottlenecks and timeline-analysis when change over time is the main story.",
+      "analysisRecipe": {
+        "focus": "Identify the strongest capacity pressure signals visible in local preview data.",
+        "blocks": [
+          {
+            "id": "capacity-signals",
+            "title": "Capacity Signals",
+            "operation": "top_entries",
+            "queryName": "partitionCpuSaturation",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "saturationPercent",
+            "valueTransform": "percent",
+            "unit": "percent",
+            "decimals": 0,
+            "limit": 5,
+            "sort": "desc"
+          }
+        ]
+      }
     },
     {
       "id": "operator-brief",
       "title": "Operator Brief",
       "summary": "Produce a concise operational briefing suitable for shift handoff.",
       "analysisPrompt": "Generate an operator handoff brief with urgent items, medium-term watch items, and any confidence caveats.",
-      "chartPreference": "donut"
+      "chartPreference": "donut",
+      "allowedArchetypes": [
+        "incident-summary"
+      ],
+      "preferredArchetype": "incident-summary",
+      "archetypeGuidance": "Keep briefing panels narrative-first.",
+      "analysisRecipe": {
+        "focus": "Collect the most important evidence for an operator handoff.",
+        "blocks": [
+          {
+            "id": "brief-signals",
+            "title": "Brief Signals",
+            "operation": "top_entries",
+            "queryName": "pendingJobsByPartition",
+            "labelFields": [
+              "partition"
+            ],
+            "valueField": "pendingJobs",
+            "limit": 3,
+            "sort": "desc"
+          }
+        ]
+      }
     }
   ]
 }
-
