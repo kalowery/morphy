@@ -1,17 +1,28 @@
 import crypto from "node:crypto";
 import OpenAI from "openai";
 import { gatherDomainContext } from "./data-sources.js";
+import {
+  buildArchetypePromptBlock,
+  getArchetypeDefinition,
+  getArchetypeRegistry,
+  getPanelAllowedArchetypes,
+  getPreferredArchetype
+} from "../lib/archetypes.js";
 
 const domainSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "name", "description", "color", "icon", "dataSources", "panels"],
+  required: ["id", "name", "description", "color", "icon", "allowedArchetypes", "dataSources", "panels"],
   properties: {
     id: { type: "string" },
     name: { type: "string" },
     description: { type: "string" },
     color: { type: "string" },
     icon: { type: "string" },
+    allowedArchetypes: {
+      type: "array",
+      items: { type: "string" }
+    },
     dataSources: {
       type: "array",
       items: { type: "string" }
@@ -21,15 +32,44 @@ const domainSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "title", "summary", "analysisPrompt", "chartPreference"],
+        required: [
+          "id",
+          "title",
+          "summary",
+          "analysisPrompt",
+          "chartPreference",
+          "allowedArchetypes",
+          "preferredArchetype",
+          "archetypeGuidance"
+        ],
         properties: {
           id: { type: "string" },
           title: { type: "string" },
           summary: { type: "string" },
           analysisPrompt: { type: "string" },
-          chartPreference: { type: "string" }
+          chartPreference: { type: "string" },
+          allowedArchetypes: {
+            type: "array",
+            items: { type: "string" }
+          },
+          preferredArchetype: { type: "string" },
+          archetypeGuidance: { type: "string" }
         }
       }
+    }
+  }
+};
+
+const archetypeSelectionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["selectedArchetype", "reason", "confidence"],
+  properties: {
+    selectedArchetype: { type: "string" },
+    reason: { type: "string" },
+    confidence: {
+      type: "string",
+      enum: ["low", "medium", "high"]
     }
   }
 };
@@ -110,7 +150,7 @@ function extractJson(text) {
   return JSON.parse(candidate.slice(firstBrace, lastBrace + 1));
 }
 
-function buildFallbackDomain(prompt, dataSources) {
+function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
   const nameSource = prompt.split(/[.!?\n]/)[0]?.trim() || "Adaptive Domain";
   const name = nameSource.length > 60 ? `${nameSource.slice(0, 57)}...` : nameSource;
   const id = slugify(name) || `domain-${Date.now()}`;
@@ -127,6 +167,7 @@ function buildFallbackDomain(prompt, dataSources) {
       .join("")
       .slice(0, 2)
       .toUpperCase(),
+    allowedArchetypes: Object.keys(getArchetypeRegistry(appConfig).library),
     dataSources: sourceIds,
     panels: [
       {
@@ -134,21 +175,30 @@ function buildFallbackDomain(prompt, dataSources) {
         title: "Domain Overview",
         summary: "Summarize the main health or performance signals across configured sources.",
         analysisPrompt: "Explain the most relevant operating picture across the configured domain sources.",
-        chartPreference: "bar"
+        chartPreference: "bar",
+        allowedArchetypes: ["incident-summary", "risk-scoreboard"],
+        preferredArchetype: "incident-summary",
+        archetypeGuidance: "Use incident-summary for broad synthesis and risk-scoreboard when ranked outliers dominate."
       },
       {
         id: "anomalies",
         title: "Anomalies",
         summary: "Identify outliers, correlated warnings, and likely investigation targets.",
         analysisPrompt: "Find the most important anomalies or outliers and explain why they matter.",
-        chartPreference: "line"
+        chartPreference: "line",
+        allowedArchetypes: ["risk-scoreboard", "timeline-analysis"],
+        preferredArchetype: "risk-scoreboard",
+        archetypeGuidance: "Use timeline-analysis only when the anomaly story is fundamentally temporal."
       },
       {
         id: "briefing",
         title: "Executive Briefing",
         summary: "Convert the current state into a concise decision-oriented brief.",
         analysisPrompt: "Generate a concise operational briefing with priorities, risks, and confidence notes.",
-        chartPreference: "donut"
+        chartPreference: "donut",
+        allowedArchetypes: ["incident-summary"],
+        preferredArchetype: "incident-summary",
+        archetypeGuidance: "Keep the briefing narrative-first."
       }
     ]
   };
@@ -173,6 +223,7 @@ function buildFallbackReport(panel, context) {
       ready[0] ? `Primary source: ${ready[0].sourceName}` : "No ready sources available",
       warnings[0] ? warnings[0].detail?.message ?? "Warning present" : "All sampled sources responded"
     ],
+    details: [],
     chart: {
       type: panel.chartPreference ?? "bar",
       title: `${panel.title} Snapshot`,
@@ -324,12 +375,240 @@ function normalizeReport(parsed, panel) {
   return {
     narrative: Array.isArray(parsed.narrative) ? parsed.narrative : [String(parsed.narrative ?? "No narrative generated.")],
     highlights: Array.isArray(parsed.highlights) ? parsed.highlights : [],
+    details: Array.isArray(parsed.details) ? parsed.details : [],
     chart: {
       type: chart.type ?? panel.chartPreference ?? "bar",
       title: chart.title ?? panel.title,
       labels: Array.isArray(chart.labels) ? chart.labels : [],
       values: Array.isArray(chart.values) ? chart.values : []
     }
+  };
+}
+
+function chartPairs(report) {
+  const labels = Array.isArray(report?.chart?.labels) ? report.chart.labels : [];
+  const values = Array.isArray(report?.chart?.values) ? report.chart.values : [];
+
+  return labels.map((label, index) => ({
+    label,
+    value: values[index]
+  }));
+}
+
+function topChartPairs(report, count = 4) {
+  return chartPairs(report)
+    .map((entry) => ({
+      ...entry,
+      numericValue: Number(entry.value)
+    }))
+    .filter((entry) => Number.isFinite(entry.numericValue))
+    .sort((left, right) => right.numericValue - left.numericValue)
+    .slice(0, count);
+}
+
+function toDetailItems(entries, formatter = (entry) => `${entry.label}: ${entry.numericValue}`) {
+  return entries.map((entry) => formatter(entry));
+}
+
+function buildArchetypeDetails({ run, report, context }) {
+  const archetype = run.selectedArchetype ?? "incident-summary";
+  const chartTop = topChartPairs(report);
+  const pendingJobs = getQuerySample(context, "pendingJobsByPartition");
+  const saturation = getQuerySample(context, "partitionCpuSaturation");
+  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
+  const recentJobs = getQuerySample(context, "recentJobsByNode");
+  const jobGpuUtilization = getQuerySample(context, "jobGpuUtilizationPeak");
+  const jobGpuVram = getQuerySample(context, "jobGpuVramPeak");
+  const fabricRisk = getQuerySample(context, "ibErrorScoreByNode");
+
+  if (archetype === "pressure-board") {
+    return [
+      {
+        title: "Backlog Leaders",
+        items: toDetailItems(
+          pendingJobs
+            .map((entry) => ({
+              label: entry.metric?.partition ?? "unknown",
+              numericValue: Number(entry.value)
+            }))
+            .filter((entry) => Number.isFinite(entry.numericValue))
+            .sort((left, right) => right.numericValue - left.numericValue)
+            .slice(0, 4),
+          (entry) => `${entry.label}: ${entry.numericValue} pending`
+        )
+      },
+      {
+        title: "Saturation Leaders",
+        items: toDetailItems(
+          saturation
+            .map((entry) => ({
+              label: entry.metric?.partition ?? "unknown",
+              numericValue: Number(entry.value)
+            }))
+            .filter((entry) => Number.isFinite(entry.numericValue))
+            .sort((left, right) => right.numericValue - left.numericValue)
+            .slice(0, 4),
+          (entry) => `${entry.label}: ${(entry.numericValue * 100).toFixed(0)}% saturation`
+        )
+      }
+    ];
+  }
+
+  if (archetype === "risk-scoreboard") {
+    return [
+      {
+        title: "Top Risks",
+        items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
+      },
+      {
+        title: "Operator Notes",
+        items: (report.highlights ?? []).slice(0, 4)
+      }
+    ];
+  }
+
+  if (archetype === "timeline-analysis") {
+    return [
+      {
+        title: "Peak Signals",
+        items: toDetailItems(chartTop, (entry) => `${entry.label}: ${entry.numericValue}`)
+      },
+      {
+        title: "Trend Notes",
+        items: (report.narrative ?? []).slice(0, 3)
+      }
+    ];
+  }
+
+  if (archetype === "correlation-inspector") {
+    return [
+      {
+        title: "Linked Entities",
+        items: recentJobs.slice(0, 5).map((entry) => {
+          const metric = entry.metric ?? {};
+          return `${metric.user ?? "unknown"} · job ${metric.jobid ?? "?"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
+        })
+      },
+      {
+        title: "Attribution Notes",
+        items: (report.highlights ?? []).slice(0, 4)
+      }
+    ];
+  }
+
+  if (archetype === "job-detail-sheet") {
+    return [
+      {
+        title: "Candidate Jobs",
+        items: recentJobs.slice(0, 5).map((entry) => {
+          const metric = entry.metric ?? {};
+          return `job ${metric.jobid ?? "?"} · ${metric.user ?? "unknown"} · ${metric.partition ?? "unknown"} · ${metric.instance ?? "unknown"}`;
+        })
+      },
+      {
+        title: "Resource Signals",
+        items: [
+          ...jobGpuUtilization.slice(0, 2).map((entry) => `GPU utilization peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(0)}%`),
+          ...jobGpuVram.slice(0, 2).map((entry) => `VRAM peak: ${(entry.metric?.jobid ?? "?")} @ ${Number(entry.value).toFixed(1)}%`)
+        ].slice(0, 4)
+      }
+    ];
+  }
+
+  if (archetype === "incident-summary") {
+    return [
+      {
+        title: "Priority Actions",
+        items: (report.highlights ?? []).slice(0, 4)
+      },
+      {
+        title: "Confidence Notes",
+        items: (report.narrative ?? []).slice(0, 2)
+      }
+    ];
+  }
+
+  if (fabricRisk.length) {
+    return [
+      {
+        title: "Infrastructure Signals",
+        items: fabricRisk.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"}: ${Number(entry.value).toFixed(0)}`)
+      }
+    ];
+  }
+
+  if (hotGpus.length) {
+    return [
+      {
+        title: "Thermal Signals",
+        items: hotGpus.slice(0, 4).map((entry) => `${entry.metric?.instance ?? "unknown"} card ${entry.metric?.card ?? "?"}: ${Number(entry.value).toFixed(0)}C`)
+      }
+    ];
+  }
+
+  return [];
+}
+
+function pickAvailableArchetype(allowedArchetypes, preferredArchetype, fallbackArchetype) {
+  if (preferredArchetype && allowedArchetypes.includes(preferredArchetype)) {
+    return preferredArchetype;
+  }
+
+  if (fallbackArchetype && allowedArchetypes.includes(fallbackArchetype)) {
+    return fallbackArchetype;
+  }
+
+  return allowedArchetypes[0];
+}
+
+function selectHeuristicArchetype({ appConfig, domain, panel, context }) {
+  const allowedArchetypes = getPanelAllowedArchetypes(appConfig, domain, panel);
+  const preferredArchetype = getPreferredArchetype(appConfig, domain, panel);
+  const pendingJobs = getQuerySample(context, "pendingJobsByPartition");
+  const hotGpus = getQuerySample(context, "hotGpusByTemperature");
+  const jobSignals = getQuerySample(context, "recentJobsByNode");
+  const gpuJobSignals = [
+    ...getQuerySample(context, "jobGpuUtilizationPeak"),
+    ...getQuerySample(context, "jobGpuVramPeak"),
+    ...getQuerySample(context, "jobGpuOccupancyPeak")
+  ];
+  const fabricSignals = getQuerySample(context, "ibErrorScoreByNode");
+
+  let selectedArchetype = preferredArchetype;
+  let reason = "Using the panel's preferred archetype because the current evidence does not strongly favor another allowed presentation mode.";
+  let confidence = "medium";
+
+  if (panel.id === "scheduler-pressure" && pendingJobs.length) {
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "pressure-board", preferredArchetype);
+    reason = "Pending-job and saturation evidence make a pressure-board the clearest allowed presentation for scheduler bottlenecks.";
+    confidence = "high";
+  } else if (panel.id === "gpu-hotspots" && hotGpus.length) {
+    const fallback = panel.chartPreference === "line" ? "timeline-analysis" : "risk-scoreboard";
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, preferredArchetype, fallback);
+    reason = "The current hotspot evidence is dominated by ranked thermal outliers and trend-like comparisons across GPUs.";
+    confidence = "high";
+  } else if (panel.id === "job-correlation" && (jobSignals.length || gpuJobSignals.length)) {
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "correlation-inspector", preferredArchetype);
+    reason = "Cross-linked job, user, and node evidence supports a correlation-oriented archetype.";
+    confidence = "medium";
+  } else if (panel.id === "job-explorer" && gpuJobSignals.length) {
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "job-detail-sheet", preferredArchetype);
+    reason = "The current preview includes enough job-to-GPU evidence to support a job-centric detail sheet.";
+    confidence = "medium";
+  } else if ((panel.id === "fleet-health" || panel.id === "fabric-storage") && (hotGpus.length || fabricSignals.length)) {
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "risk-scoreboard", preferredArchetype);
+    reason = "The current evidence is strongest when presented as ranked host or infrastructure risks.";
+    confidence = "medium";
+  } else if (panel.id === "operator-brief") {
+    selectedArchetype = pickAvailableArchetype(allowedArchetypes, "incident-summary", preferredArchetype);
+    reason = "Operator handoff panels should remain narrative-first unless a stronger allowed archetype is explicitly justified.";
+    confidence = "high";
+  }
+
+  return {
+    selectedArchetype,
+    reason,
+    confidence
   };
 }
 
@@ -362,7 +641,7 @@ export class AgentRuntime {
     }, "analysis");
 
     if (!this.openai) {
-      const domain = buildFallbackDomain(prompt, dataSources);
+      const domain = buildFallbackDomain(prompt, dataSources, appConfig);
       await this.configStore.saveDomain(domain);
       this.logger.info("Generated fallback domain", {
         domainId: domain.id,
@@ -391,7 +670,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Available data sources:\n${JSON.stringify(dataSources, null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}`
+              text: `Available data sources:\n${JSON.stringify(dataSources, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nEvery panel must declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.`
             }
           ]
         }
@@ -511,6 +790,73 @@ export class AgentRuntime {
     return [panel.analysisPrompt, focusHint, rationaleHint, actionsHint].filter(Boolean).join("\n\n");
   }
 
+  async selectArchetype({ appConfig, domain, panel, context }) {
+    const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
+    const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
+
+    if (!this.openai) {
+      return fallback;
+    }
+
+    try {
+      const response = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "Choose the best widget archetype for the current panel from the allowed set only. Favor evidence alignment over novelty. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Domain:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nPick the best archetype from the allowed set for the current evidence.`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "archetype_selection",
+            schema: archetypeSelectionSchema,
+            strict: true
+          }
+        }
+      });
+
+      const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
+      const allowedArchetypes = archetypeBlock.allowed;
+
+      if (!allowedArchetypes.includes(parsed.selectedArchetype)) {
+        this.logger.warn("OpenAI selected disallowed archetype; using fallback", {
+          panelId: panel.id,
+          selectedArchetype: parsed.selectedArchetype,
+          allowedArchetypes
+        }, "planner");
+        return fallback;
+      }
+
+      return parsed;
+    } catch (error) {
+      this.logger.warn("Archetype selection fell back to heuristic", {
+        panelId: panel.id,
+        error: error.message
+      }, "planner");
+      return fallback;
+    }
+  }
+
   async ensurePanelRun({ domainId, panelId, force = false, freshnessMs = 0, contextOverride = null, workspacePlanOverride = null, trigger = "manual" }) {
     const runs = await this.configStore.listRuns();
     const relevantRuns = runs.filter((run) => run.domainId === domainId && run.panelId === panelId);
@@ -581,6 +927,8 @@ export class AgentRuntime {
     }
 
     const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
+    const archetypeSelection = await this.selectArchetype({ appConfig, domain, panel, context });
+    const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, archetypeSelection.selectedArchetype);
     this.logger.info("Starting panel analysis", {
       domainId,
       panelId,
@@ -588,7 +936,8 @@ export class AgentRuntime {
       trigger,
       provider: this.openai ? "openai" : "fallback",
       previewCount: context.previewCount,
-      focusPanelId: workspacePlan?.focusPanelId ?? null
+      focusPanelId: workspacePlan?.focusPanelId ?? null,
+      selectedArchetype: archetypeSelection.selectedArchetype
     }, "analysis");
     const run = {
       id: crypto.randomUUID(),
@@ -602,10 +951,20 @@ export class AgentRuntime {
       report: this.openai ? null : buildFallbackReport(panel, context),
       provider: this.openai ? "openai-responses" : "local-fallback",
       trigger,
+      widgetStatus: "idle",
+      selectedArchetype: archetypeSelection.selectedArchetype,
+      archetypeReason: archetypeSelection.reason,
+      archetypeConfidence: archetypeSelection.confidence,
+      archetypeTitle: selectedArchetypeDefinition?.title ?? archetypeSelection.selectedArchetype,
       remoteResponseId: null,
       widgetId: null,
       widgetUrl: null
     };
+
+    if (!this.openai && run.report) {
+      run.report.details = buildArchetypeDetails({ run, report: run.report, context: run.context });
+      run.widgetStatus = "pending";
+    }
 
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
@@ -635,7 +994,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: "You are an analytical backend. Return strict JSON with keys narrative, highlights, and chart. The chart object must contain type, title, labels, and values."
+              text: "You are an analytical backend. Return strict JSON with keys narrative, highlights, chart, and optional details. The chart object must contain type, title, labels, and values."
             }
           ]
         },
@@ -644,7 +1003,13 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nWorkspace plan:\n${JSON.stringify(workspacePlan, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}`
+              text: `Domain:\n${JSON.stringify(domain, null, 2)}\n\nWorkspace plan:\n${JSON.stringify(workspacePlan, null, 2)}\n\nPanel:\n${JSON.stringify(panel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+                id: run.selectedArchetype,
+                title: run.archetypeTitle,
+                reason: run.archetypeReason,
+                confidence: run.archetypeConfidence,
+                allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
+              }, null, 2)}\n\nCurrent source preview context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}`
             }
           ]
         }
@@ -758,6 +1123,7 @@ export class AgentRuntime {
       parsed = {
         narrative: ["The agent returned a non-JSON response, so the raw text has been wrapped."],
         highlights: [error.message],
+        details: [],
         chart: {
           type: panel.chartPreference ?? "bar",
           title: panel.title,
@@ -769,6 +1135,11 @@ export class AgentRuntime {
 
     run.status = "completed";
     run.report = normalizeReport(parsed, panel);
+    if (!run.report.details.length) {
+      run.report.details = buildArchetypeDetails({ run, report: run.report, context: run.context });
+    }
+    run.widgetStatus = "pending";
+    run.widgetError = null;
     run.updatedAt = new Date().toISOString();
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
@@ -789,6 +1160,11 @@ export class AgentRuntime {
     }
 
     try {
+      run.widgetStatus = "in_progress";
+      run.widgetError = null;
+      run.updatedAt = new Date().toISOString();
+      await this.configStore.saveRun(run);
+      this.eventBus.emit("run.update", run);
       this.logger.debug("Generating widget for run", {
         runId: run.id,
         domainId: domain.id,
@@ -797,12 +1173,15 @@ export class AgentRuntime {
       const widget = await this.widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
+      run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
+      run.widgetStatus = "completed";
       this.logger.info("Widget attached to run", {
         runId: run.id,
         widgetId: widget.id,
         panelId: panel.id
       }, "widgets");
     } catch (error) {
+      run.widgetStatus = "failed";
       run.widgetError = error.message;
       this.logger.warn("Widget generation failed", {
         runId: run.id,
@@ -815,7 +1194,7 @@ export class AgentRuntime {
   async generateWidgetForRun(runId, domain, panel) {
     const run = await this.configStore.getRun(runId);
 
-    if (!run?.report || run.widgetId) {
+    if (!run?.report || run.widgetId || run.widgetStatus === "in_progress") {
       return;
     }
 

@@ -514,6 +514,116 @@ textarea {
   background: rgba(6, 10, 20, 0.45);
 }
 
+.panel-archetype-shell {
+  margin-top: 0.9rem;
+}
+
+.panel-phase-shell {
+  margin-top: 0.9rem;
+}
+
+.panel-phase-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.8rem 0.95rem;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(7, 17, 29, 0.38);
+}
+
+.phase-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(11, 18, 32, 0.65);
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.phase-chip.active {
+  border-color: rgba(245, 165, 36, 0.28);
+  color: var(--text);
+}
+
+.phase-chip.done {
+  border-color: rgba(110, 231, 183, 0.28);
+  color: var(--text);
+}
+
+.phase-chip.failed {
+  border-color: rgba(251, 113, 133, 0.3);
+  color: #ffd1d8;
+}
+
+.phase-note {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.panel-archetype-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 18px;
+  border: 1px solid rgba(110, 231, 183, 0.16);
+  background: rgba(7, 17, 29, 0.42);
+}
+
+.panel-archetype-card.pending {
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+.panel-archetype-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.archetype-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(110, 231, 183, 0.24);
+  background: rgba(11, 18, 32, 0.75);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.panel-archetype-meta,
+.panel-archetype-reason {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.detail-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 0.9rem;
+}
+
+.detail-card {
+  padding: 0.85rem 0.95rem;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(6, 10, 20, 0.42);
+}
+
+.detail-card ul {
+  margin: 0.55rem 0 0;
+  padding-left: 1rem;
+  color: var(--muted);
+}
+
 .widget-host {
   display: flex;
   flex-direction: column;
@@ -559,6 +669,12 @@ textarea {
 .widget-caption {
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.widget-meta {
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
 }
 
 .widget-note {

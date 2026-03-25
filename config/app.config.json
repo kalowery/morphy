@@ -16,6 +16,35 @@
     "reasoningEffort": "medium",
     "sandboxMode": "iframe"
   },
+  "archetypes": {
+    "defaultArchetype": "incident-summary",
+    "library": {
+      "risk-scoreboard": {
+        "title": "Risk Scoreboard",
+        "description": "Ranked operational risk layout emphasizing outliers, scores, and triage order."
+      },
+      "pressure-board": {
+        "title": "Pressure Board",
+        "description": "Queue and saturation board for capacity pressure and bottleneck comparison."
+      },
+      "timeline-analysis": {
+        "title": "Timeline Analysis",
+        "description": "Trend-oriented layout for time-varying signals, slopes, and temporal comparisons."
+      },
+      "correlation-inspector": {
+        "title": "Correlation Inspector",
+        "description": "Cross-linked layout for associating hosts, users, jobs, partitions, and other entities."
+      },
+      "incident-summary": {
+        "title": "Incident Summary",
+        "description": "Narrative-first operational briefing layout with actions, caveats, and confidence."
+      },
+      "job-detail-sheet": {
+        "title": "Job Detail Sheet",
+        "description": "Job-centric layout with workload attribution and resource behavior."
+      }
+    }
+  },
   "refresh": {
     "schedulerTickMs": 60000,
     "sourcePreviewTtlMs": 60000,

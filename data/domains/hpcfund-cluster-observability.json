@@ -4,6 +4,14 @@
   "description": "Historical observability domain for the HPCFund GPU cluster, combining ROCm telemetry, Slurm scheduler state, node-exporter metrics, InfiniBand health, and job-to-node correlation from March 2026.",
   "color": "#8df0c6",
   "icon": "HF",
+  "allowedArchetypes": [
+    "risk-scoreboard",
+    "pressure-board",
+    "timeline-analysis",
+    "correlation-inspector",
+    "incident-summary",
+    "job-detail-sheet"
+  ],
   "dataSources": [
     "victoria-cluster"
   ],
@@ -13,49 +21,92 @@
       "title": "Fleet Health",
       "summary": "Rank hosts by operational risk using node state, SMART, InfiniBand, scheduler, and GPU fault signals across the historical window.",
       "analysisPrompt": "Using the VictoriaMetrics historical window, assess overall cluster health for hpcfund. Identify the highest-risk hosts, explain whether the dominant risks are scheduler, hardware, fabric, or thermal, and call out where evidence is weak versus strong.",
-      "chartPreference": "bar"
+      "chartPreference": "bar",
+      "allowedArchetypes": [
+        "risk-scoreboard",
+        "incident-summary"
+      ],
+      "preferredArchetype": "risk-scoreboard",
+      "archetypeGuidance": "Prefer risk-scoreboard when concrete host ranking is strong. Fall back to incident-summary when evidence is mixed or mostly narrative."
     },
     {
       "id": "scheduler-pressure",
       "title": "Scheduler Pressure",
       "summary": "Explain partition saturation, pending demand, and where the queue is likely to be constraining users.",
       "analysisPrompt": "Analyze scheduler pressure by partition. Explain which GPU families are saturated, where pending jobs are concentrated, and what that implies about capacity bottlenecks or scheduling imbalance.",
-      "chartPreference": "bar"
+      "chartPreference": "bar",
+      "allowedArchetypes": [
+        "pressure-board",
+        "incident-summary"
+      ],
+      "preferredArchetype": "pressure-board",
+      "archetypeGuidance": "Choose pressure-board when partition backlog and saturation metrics are clear. Use incident-summary only when the evidence is mostly textual."
     },
     {
       "id": "gpu-hotspots",
       "title": "GPU Hotspots",
       "summary": "Focus on ROCm temperature, utilization, VRAM pressure, and power signals to find the most stressed accelerators.",
       "analysisPrompt": "Find the hottest or most stressed GPUs in the historical window. Correlate temperature, GPU activity, and any relevant host context, and explain which accelerators deserve investigation first.",
-      "chartPreference": "line"
+      "chartPreference": "line",
+      "allowedArchetypes": [
+        "timeline-analysis",
+        "risk-scoreboard"
+      ],
+      "preferredArchetype": "timeline-analysis",
+      "archetypeGuidance": "Use timeline-analysis when temporal or trend framing is meaningful. Use risk-scoreboard when the story is primarily ranked outliers."
     },
     {
       "id": "fabric-storage",
       "title": "Fabric And Storage",
       "summary": "Surface InfiniBand anomalies and SMART health issues that can affect throughput or reliability.",
       "analysisPrompt": "Analyze InfiniBand and storage-health signals. Identify nodes with unusual fabric error behavior or SMART failures, explain likely operator impact, and separate probable noise from meaningful degradation.",
-      "chartPreference": "bar"
+      "chartPreference": "bar",
+      "allowedArchetypes": [
+        "risk-scoreboard",
+        "incident-summary"
+      ],
+      "preferredArchetype": "risk-scoreboard",
+      "archetypeGuidance": "Prefer ranked diagnostics when error counters clearly isolate a few nodes. Use incident-summary when evidence is sparse."
     },
     {
       "id": "job-correlation",
       "title": "Job Correlation",
       "summary": "Connect stressed nodes back to partitions, users, and jobs so operators can understand what workload context explains the telemetry.",
       "analysisPrompt": "Use scheduler and job metadata to connect hot or problematic nodes to likely workload causes. Summarize which partitions and users appear associated with the most stressed parts of the cluster, and note any ambiguity in the evidence.",
-      "chartPreference": "donut"
+      "chartPreference": "donut",
+      "allowedArchetypes": [
+        "correlation-inspector",
+        "incident-summary"
+      ],
+      "preferredArchetype": "correlation-inspector",
+      "archetypeGuidance": "Prefer correlation-inspector when there are clear host-user-job-partition relationships. Fall back to incident-summary when attribution is weak."
     },
     {
       "id": "job-explorer",
       "title": "Job Explorer",
       "summary": "Investigate specific Slurm jobs and infer how GPU utilization, occupancy, and VRAM demand changed over the job lifetime or visible window.",
       "analysisPrompt": "Use rmsjob_info and the ROCm telemetry series to build a job-centric view. Identify specific jobs that can be tied to nodes with strong GPU demand signals, summarize which users and partitions they belong to, and explain how GPU utilization, compute-unit occupancy, VRAM use, power, or thermal behavior appear to fluctuate over the visible window. Be explicit about when attribution is direct versus inferred from node-level overlap.",
-      "chartPreference": "line"
+      "chartPreference": "line",
+      "allowedArchetypes": [
+        "job-detail-sheet",
+        "timeline-analysis",
+        "correlation-inspector"
+      ],
+      "preferredArchetype": "job-detail-sheet",
+      "archetypeGuidance": "Use job-detail-sheet when the analysis can focus on a few jobs. Use timeline-analysis for behavior-over-window stories and correlation-inspector for broader workload attribution."
     },
     {
       "id": "operator-brief",
       "title": "Operator Brief",
       "summary": "Produce a shift-handoff summary with the most important actions, watch items, and notable evidence.",
       "analysisPrompt": "Generate a concise cluster-operations handoff brief for hpcfund. Include urgent actions, watch items, scheduler pressure summary, hardware/fabric notes, and confidence caveats given that this dataset is historical rather than live.",
-      "chartPreference": "donut"
+      "chartPreference": "donut",
+      "allowedArchetypes": [
+        "incident-summary",
+        "risk-scoreboard"
+      ],
+      "preferredArchetype": "incident-summary",
+      "archetypeGuidance": "Prefer incident-summary for handoff-oriented communication. Use risk-scoreboard only when the brief is driven by a very clear ranked set of risks."
     }
   ]
 }

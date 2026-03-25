@@ -13,6 +13,7 @@ const state = {
   activePanelId: null,
   isStudioOpen: false,
   panelRunState: {},
+  sectionOverrides: {},
   bootstrapSignature: null,
   currentDomainRenderSignature: null
 };
@@ -265,6 +266,21 @@ function currentWorkspacePlan() {
   return domain ? state.workspacePlans[domain.id] ?? null : null;
 }
 
+function sectionOverrideKey(domainId, sectionId) {
+  return `${domainId}:${sectionId}`;
+}
+
+function getSectionOpenState(sectionId, defaultOpen) {
+  const domainId = state.selectedDomainId ?? null;
+
+  if (!domainId) {
+    return defaultOpen;
+  }
+
+  const override = state.sectionOverrides[sectionOverrideKey(domainId, sectionId)];
+  return typeof override === "boolean" ? override : defaultOpen;
+}
+
 function visiblePanelIdsForDomain(domain) {
   if (!domain) {
     return [];
@@ -320,8 +336,8 @@ function currentDomainRenderSignature(domain) {
       ? {
           panelId: panel.id,
           transientState: panelKey ? state.panelRunState[panelKey] ?? null : null,
-          latestRun: latestRun ? [latestRun.id, latestRun.updatedAt, latestRun.status, latestRun.widgetId ?? null] : null,
-          widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetId ?? null] : null,
+          latestRun: latestRun ? [latestRun.id, latestRun.updatedAt, latestRun.status, latestRun.widgetStatus ?? null, latestRun.widgetId ?? null] : null,
+          widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetStatus ?? null, widgetRun.widgetId ?? null] : null,
           activeRun: activeRun ? [activeRun.id, activeRun.updatedAt] : null,
           staleRun: staleRun ? [staleRun.id, staleRun.updatedAt] : null,
           failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null
@@ -349,11 +365,17 @@ function renderWorkspacePlan(workspacePlan) {
   }
 
   if (elements.sourcePreviewSection) {
-    elements.sourcePreviewSection.open = !(workspacePlan?.collapsedSections ?? []).includes("source-preview");
+    elements.sourcePreviewSection.open = getSectionOpenState(
+      "source-preview",
+      !(workspacePlan?.collapsedSections ?? []).includes("source-preview")
+    );
   }
   const recentRunsSection = document.querySelector("#recent-runs-section");
   if (recentRunsSection) {
-    recentRunsSection.open = !(workspacePlan?.collapsedSections ?? []).includes("recent-runs");
+    recentRunsSection.open = getSectionOpenState(
+      "recent-runs",
+      !(workspacePlan?.collapsedSections ?? []).includes("recent-runs")
+    );
   }
 }
 
@@ -544,18 +566,77 @@ function renderPlaceholderChart(kind = "bar") {
 }
 
 function widgetPayload(run, domain, panel) {
+  const queryWindow = run?.context?.previews?.find((preview) => preview?.detail?.queryWindow)?.detail?.queryWindow ?? null;
   return {
     runId: run.id,
     domain,
     panel,
+    archetype: {
+      id: run.selectedArchetype ?? null,
+      title: run.archetypeTitle ?? null,
+      reason: run.archetypeReason ?? null,
+      confidence: run.archetypeConfidence ?? null
+    },
     report: run.report,
     context: run.context,
+    timestamps: {
+      runCreatedAt: run.createdAt ?? null,
+      runUpdatedAt: run.updatedAt ?? null,
+      widgetGeneratedAt: null,
+      evaluationTime: queryWindow?.evaluationTime ?? null,
+      windowStart: queryWindow?.start ?? null,
+      windowEnd: queryWindow?.end ?? null
+    },
     theme: {
       accent: domain.color || "#6ee7b7",
       background: "#07111d",
-      panel: "#101826"
+      panel: "#101826",
+      text: "#ebf4ff",
+      muted: "#97a8bc"
     }
   };
+}
+
+function formatLocalTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short"
+  }).format(date);
+}
+
+function renderWidgetMeta(widgetSourceRun) {
+  const widget = widgetSourceRun?.widgetId
+    ? state.widgets.find((entry) => entry.id === widgetSourceRun.widgetId) ?? null
+    : null;
+  const analysisTime = formatLocalTimestamp(widgetSourceRun?.updatedAt);
+  const snapshotTime = formatLocalTimestamp(
+    widgetSourceRun?.context?.previews?.find((preview) => preview?.detail?.queryWindow)?.detail?.queryWindow?.evaluationTime
+  );
+  const widgetTime = formatLocalTimestamp(widgetSourceRun?.widgetGeneratedAt ?? widget?.generatedAt ?? widgetSourceRun?.updatedAt);
+  const parts = [
+    widgetSourceRun?.archetypeTitle ?? null,
+    analysisTime ? `analysis ${analysisTime}` : null,
+    widgetSourceRun?.widgetId ? `widget ${widgetTime}` : null,
+    snapshotTime ? `data ${snapshotTime}` : null
+  ].filter(Boolean);
+
+  if (!parts.length) {
+    return "";
+  }
+
+  return parts.join(" · ");
 }
 
 function renderWidgetStatus(run, widgetRun) {
@@ -565,6 +646,22 @@ function renderWidgetStatus(run, widgetRun) {
 
   if (run?.widgetId) {
     return "";
+  }
+
+  if (widgetRun?.widgetId && widgetRun.id !== run?.id && (run?.widgetStatus === "in_progress" || run?.widgetStatus === "pending")) {
+    return `
+      <div class="widget-status widget-status-stale">
+        <strong>Widget fallback in use.</strong> The generated widget below is from an older analysis run while Morphy finishes building a new widget for the current run.
+      </div>
+    `;
+  }
+
+  if (run?.widgetStatus === "in_progress" || run?.widgetStatus === "pending") {
+    return `
+      <div class="widget-status widget-status-pending">
+        <strong>Generated widget is underway.</strong> Analysis is complete and the native chart above is current; Morphy is still building the browser widget artifact for this run.
+      </div>
+    `;
   }
 
   if (widgetRun?.widgetId && widgetRun.id !== run?.id) {
@@ -594,6 +691,159 @@ function renderWidgetStatus(run, widgetRun) {
   return "";
 }
 
+function renderRunLifecycle(run, transientState) {
+  if (transientState?.status === "starting") {
+    return `
+      <div class="panel-phase-card">
+        <span class="phase-chip active">Starting</span>
+        <span class="phase-chip">Analysis</span>
+        <span class="phase-chip">Widget</span>
+      </div>
+    `;
+  }
+
+  if (!run) {
+    return `
+      <div class="panel-phase-card">
+        <span class="phase-chip">Ready</span>
+        <span class="phase-note">No analysis run has been started for this panel yet.</span>
+      </div>
+    `;
+  }
+
+  const effectiveWidgetStatus = run.widgetStatus ?? (run.widgetId ? "completed" : "idle");
+  const analysisLabel = run.status === "in_progress"
+    ? "Analysis Running"
+    : run.status === "failed"
+      ? "Analysis Failed"
+      : "Analysis Complete";
+  const widgetLabel = effectiveWidgetStatus === "in_progress"
+    ? "Widget Generating"
+    : effectiveWidgetStatus === "completed"
+      ? "Widget Ready"
+      : effectiveWidgetStatus === "failed"
+        ? "Widget Failed"
+        : effectiveWidgetStatus === "pending"
+          ? "Widget Pending"
+          : "Widget Idle";
+
+  const note = run.status === "in_progress"
+    ? "The analytical pass is still running on the server."
+    : run.status === "completed" && (effectiveWidgetStatus === "pending" || effectiveWidgetStatus === "in_progress")
+      ? "The report is ready. Browser widget generation is still in progress."
+    : run.status === "completed" && effectiveWidgetStatus === "completed"
+      ? "Both analysis and widget generation are complete for this run."
+    : run.status === "failed"
+      ? `The analysis run failed${run.error ? `: ${escapeHtml(run.error)}` : "."}`
+    : effectiveWidgetStatus === "failed"
+      ? `Analysis completed, but widget generation failed${run.widgetError ? `: ${escapeHtml(run.widgetError)}` : "."}`
+    : "Run state is available.";
+
+  return `
+    <div class="panel-phase-card">
+      <span class="phase-chip ${run.status === "in_progress" ? "active" : run.status === "failed" ? "failed" : "done"}">${analysisLabel}</span>
+      <span class="phase-chip ${
+        effectiveWidgetStatus === "in_progress" || effectiveWidgetStatus === "pending"
+          ? "active"
+          : effectiveWidgetStatus === "failed"
+            ? "failed"
+            : effectiveWidgetStatus === "completed"
+              ? "done"
+              : ""
+      }">${widgetLabel}</span>
+      <span class="phase-note">${note}</span>
+    </div>
+  `;
+}
+
+function renderArchetypeDetails(run) {
+  const details = Array.isArray(run?.report?.details) ? run.report.details.filter((section) => section?.title && section?.items?.length) : [];
+
+  const derivedDetails = !details.length && run?.report
+    ? (() => {
+        const labels = Array.isArray(run.report.chart?.labels) ? run.report.chart.labels : [];
+        const values = Array.isArray(run.report.chart?.values) ? run.report.chart.values : [];
+        const top = labels
+          .map((label, index) => ({
+            label,
+            value: Number(values[index] ?? 0)
+          }))
+          .filter((entry) => Number.isFinite(entry.value))
+          .sort((left, right) => right.value - left.value)
+          .slice(0, 4);
+        const highlights = Array.isArray(run.report.highlights) ? run.report.highlights.slice(0, 4) : [];
+        const narrative = Array.isArray(run.report.narrative) ? run.report.narrative.slice(0, 2) : [];
+        const archetype = run.selectedArchetype ?? "incident-summary";
+
+        if (archetype === "pressure-board") {
+          return [
+            {
+              title: "Backlog Leaders",
+              items: top.map((entry) => `${entry.label}: ${entry.value}`)
+            },
+            {
+              title: "Pressure Notes",
+              items: highlights
+            }
+          ];
+        }
+
+        if (archetype === "job-detail-sheet" || archetype === "correlation-inspector") {
+          return [
+            {
+              title: archetype === "job-detail-sheet" ? "Candidate Jobs" : "Linked Entities",
+              items: highlights
+            },
+            {
+              title: "Operator Notes",
+              items: narrative
+            }
+          ];
+        }
+
+        if (archetype === "timeline-analysis") {
+          return [
+            {
+              title: "Peak Signals",
+              items: top.map((entry) => `${entry.label}: ${entry.value}`)
+            },
+            {
+              title: "Trend Notes",
+              items: narrative
+            }
+          ];
+        }
+
+        return [
+          {
+            title: "Key Signals",
+            items: top.map((entry) => `${entry.label}: ${entry.value}`)
+          },
+          {
+            title: "Highlights",
+            items: highlights
+          }
+        ];
+      })()
+    : [];
+  const sections = details.length ? details : derivedDetails;
+
+  if (!sections.length) {
+    return "";
+  }
+
+  return `
+    <div class="detail-section-grid">
+      ${sections.map((section) => `
+        <section class="detail-card">
+          <p class="section-label">${escapeHtml(section.title)}</p>
+          <ul>${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </section>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderVisualization(run, domain, panel, widgetRun = null) {
   const nativeChart = `
     <div class="native-chart-shell">
@@ -614,6 +864,7 @@ function renderVisualization(run, domain, panel, widgetRun = null) {
       ${widgetStatus}
       <div class="widget-host">
         <p class="widget-caption">Generated browser widget served from the artifact runtime.</p>
+        <p class="widget-meta">${escapeHtml(renderWidgetMeta(widgetSourceRun))}</p>
         <iframe
           class="widget-frame"
           title="${escapeHtml(panel.title)}"
@@ -627,6 +878,59 @@ function renderVisualization(run, domain, panel, widgetRun = null) {
         ></iframe>
         <p class="widget-note">If the generated widget is sparse, the native chart above is the guaranteed fallback visualization.</p>
       </div>
+    </div>
+  `;
+}
+
+function formatArchetypeTitle(value) {
+  if (!value) {
+    return "Adaptive";
+  }
+
+  return value
+    .split(/[-_\s]+/g)
+    .filter(Boolean)
+    .map((token) => token[0].toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+function renderArchetypeMeta(panel, run) {
+  const allowedArchetypes = Array.isArray(panel.allowedArchetypes) && panel.allowedArchetypes.length
+    ? panel.allowedArchetypes
+    : [];
+
+  if (!run?.selectedArchetype) {
+    const allowed = allowedArchetypes.length
+      ? allowedArchetypes.map((entry) => formatArchetypeTitle(entry)).join(", ")
+      : "Adaptive";
+    const guidance = panel.archetypeGuidance
+      ? `<p class="panel-archetype-reason">${escapeHtml(panel.archetypeGuidance)}</p>`
+      : "";
+
+    return `
+      <div class="panel-archetype-card pending">
+        <div class="panel-archetype-row">
+          <span class="section-label">Allowed Archetypes</span>
+          <span class="archetype-badge">${escapeHtml(allowed)}</span>
+        </div>
+        ${guidance}
+      </div>
+    `;
+  }
+
+  const confidence = run.archetypeConfidence ? `Confidence: ${run.archetypeConfidence}` : "Confidence pending";
+  const reason = run.archetypeReason
+    ? `<p class="panel-archetype-reason">${escapeHtml(run.archetypeReason)}</p>`
+    : "";
+
+  return `
+    <div class="panel-archetype-card">
+      <div class="panel-archetype-row">
+        <span class="section-label">Selected Archetype</span>
+        <span class="archetype-badge">${escapeHtml(run.archetypeTitle || formatArchetypeTitle(run.selectedArchetype))}</span>
+      </div>
+      <p class="panel-archetype-meta">${escapeHtml(confidence)}</p>
+      ${reason}
     </div>
   `;
 }
@@ -786,22 +1090,26 @@ function renderCurrentDomain() {
   const node = panelTemplate.content.firstElementChild.cloneNode(true);
   const panelKey = `${domain.id}:${panel.id}`;
   const transientState = state.panelRunState[panelKey] ?? null;
-  node.querySelector(".panel-kicker").textContent = panel.chartPreference;
-  node.querySelector(".panel-title").textContent = panel.title;
-  node.querySelector(".panel-summary").textContent = panel.summary;
   const latestRun = latestRenderableRun(domainRuns, panel.id);
   const widgetRun = latestWidgetRun(domainRuns, panel.id);
   const activeRun = activePanelRun(domainRuns, panel.id);
   const staleRun = stalePanelRun(domainRuns, panel.id);
   const failedRun = failedPanelRun(domainRuns, panel.id);
+  const lifecycleRun = activeRun ?? latestRun ?? failedRun ?? staleRun ?? null;
+  node.querySelector(".panel-kicker").textContent = latestRun?.archetypeTitle || panel.chartPreference;
+  node.querySelector(".panel-title").textContent = panel.title;
+  node.querySelector(".panel-summary").textContent = panel.summary;
+  node.querySelector(".panel-phase-shell").innerHTML = renderRunLifecycle(lifecycleRun, transientState);
   const runButton = node.querySelector(".run-button");
   const forceRunButton = node.querySelector(".force-run-button");
   node.querySelector(".chart-title").textContent = (latestRun?.widgetId || widgetRun?.widgetId)
     ? "Generated Browser Visualization"
     : latestRun?.report?.chart?.title || "Awaiting chart output";
   node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel, widgetRun);
+  node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, latestRun);
   node.querySelector(".report-shell").innerHTML = latestRun?.report
     ? `
+      ${renderArchetypeDetails(latestRun)}
       ${latestRun.report.narrative.map((entry) => `<p>${escapeHtml(entry)}</p>`).join("")}
       ${latestRun.report.highlights.length ? `<ul>${latestRun.report.highlights.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul>` : ""}
     `
@@ -854,7 +1162,10 @@ function renderRuns() {
     const domain = state.domains.find((entry) => entry.id === run.domainId);
     node.querySelector(".run-domain").textContent = domain?.name || run.domainId;
     node.querySelector(".run-title").textContent = run.panelTitle;
-    node.querySelector(".status-pill").textContent = run.status;
+    const effectiveWidgetStatus = run.widgetStatus ?? (run.widgetId ? "completed" : null);
+    node.querySelector(".status-pill").textContent = effectiveWidgetStatus && run.status === "completed"
+      ? `${run.status} · widget ${effectiveWidgetStatus.replaceAll("_", " ")}`
+      : run.status;
     node.querySelector(".run-report").innerHTML = run.report
       ? `
         ${run.report.narrative.map((entry) => `<p>${escapeHtml(entry)}</p>`).join("")}
@@ -871,7 +1182,7 @@ async function refresh() {
   const payload = await request("/api/bootstrap");
   const nextSignature = JSON.stringify({
     liveStateUpdatedAt: payload.liveStateUpdatedAt ?? null,
-    runs: (payload.runs ?? []).map((run) => [run.id, run.updatedAt, run.status, run.widgetId ?? null]),
+    runs: (payload.runs ?? []).map((run) => [run.id, run.updatedAt, run.status, run.widgetStatus ?? null, run.widgetId ?? null]),
     widgets: (payload.widgets ?? []).map((widget) => widget.id),
     plans: Object.fromEntries(
       Object.entries(payload.workspacePlans ?? {}).map(([domainId, workspacePlan]) => [domainId, workspacePlan?.updatedAt ?? null])
@@ -1225,6 +1536,27 @@ elements.sourceForm.addEventListener("submit", (event) => {
 elements.refreshButton.addEventListener("click", () => {
   requestDomainRefresh(false).catch((error) => window.alert(error.message));
 });
+
+if (elements.sourcePreviewSection) {
+  elements.sourcePreviewSection.addEventListener("toggle", () => {
+    if (!state.selectedDomainId) {
+      return;
+    }
+
+    state.sectionOverrides[sectionOverrideKey(state.selectedDomainId, "source-preview")] = elements.sourcePreviewSection.open;
+  });
+}
+
+const recentRunsSection = document.querySelector("#recent-runs-section");
+if (recentRunsSection) {
+  recentRunsSection.addEventListener("toggle", () => {
+    if (!state.selectedDomainId) {
+      return;
+    }
+
+    state.sectionOverrides[sectionOverrideKey(state.selectedDomainId, "recent-runs")] = recentRunsSection.open;
+  });
+}
 
 elements.studioToggleButton?.addEventListener("click", () => {
   setStudioOpen(!state.isStudioOpen);

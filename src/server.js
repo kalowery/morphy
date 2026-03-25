@@ -259,9 +259,17 @@ export async function createApp() {
         return;
       }
 
+      run.widgetStatus = "in_progress";
+      run.widgetError = null;
+      run.updatedAt = new Date().toISOString();
+      await configStore.saveRun(run);
+      eventBus.emit("run.update", run);
+
       const widget = await widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
+      run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
+      run.widgetStatus = "completed";
       run.updatedAt = new Date().toISOString();
       await configStore.saveRun(run);
       eventBus.emit("run.update", run);
