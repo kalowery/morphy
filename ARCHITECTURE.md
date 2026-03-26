@@ -1,685 +1,203 @@
 # Morphy Architecture
 
-## Executive Summary
+## Introduction
 
-Morphy is an experiment in a **metamorphic system**: a system that can contextually modify parts of its own behavior and presentation through AI while remaining bounded, inspectable, and operable.
+Morphy is an experiment in a particular kind of AI-assisted software system: a **metamorphic system**. By metamorphic, Morphy does not mean “a program that rewrites itself arbitrarily.” It means a system that can change its analytical shape, emphasis, and presentation in response to context while still remaining bounded enough to inspect, debug, and operate. The host application stays recognizable and stable. The inner analytical workspace, however, can shift. Panels can move in and out of focus. Presentation archetypes can change. Widgets can be regenerated. Interactive controls can expose different entities and workflows in different domains. The result should feel adaptable without feeling chaotic.
 
-Morphy is not trying to be a fully self-rewriting application. The design goal is more specific:
+That design goal shapes almost every major architectural decision in the project. Morphy is not a chatbot pasted into a dashboard. It is also not a fixed dashboard with a few AI-generated summaries bolted on. Instead, it is a server-centered analytical runtime that uses configuration, deterministic local tooling, model reasoning, and browser-side rendering together to project a domain-specific analytical interface over heterogeneous data sources.
 
-- keep a stable host application
-- let AI reinterpret data context continuously
-- let AI adapt workspace structure within explicit limits
-- let AI choose among bounded presentation archetypes
-- let AI generate browser-executable panel artifacts safely
-- preserve enough structure that operators can trust, debug, and manage the result
+This document describes the system as it exists now: how domains are defined, how the server thinks, how data moves into the browser, how widgets are generated and updated, where model-directed tool use exists already, and where the architecture is intentionally constrained.
 
-This document describes how the current Morphy prototype is structured and what constraints define its metamorphic behavior.
+## The Core Architectural Idea
 
-## System Goals
+At the highest level, Morphy is built around a stable host shell and an adaptive interior.
 
-Morphy is designed to support analytical web applications over heterogeneous data sources such as:
+The stable shell is the part of the application that should not surprise the user. It includes the Node.js and Express server, the browser host application, the routing and API surface, the persistence layer, the refresh coordinator, the billing tracker, the diagnostics system, and the general layout of the UI. Morphy treats that shell as infrastructure. It is deterministic, inspectable, and owned by the application code.
 
-- relational systems
-- JSON object stores
-- time-series databases such as VictoriaMetrics
+Inside that shell sits the adaptive analytical workspace. This is the part Morphy allows to shift in response to both configuration and runtime evidence. A domain can define a completely different set of panels than another domain. The workspace planner can choose which panels matter right now. The system can select different presentation archetypes for the same panel under different evidence conditions. Widgets can be regenerated or updated with richer filtered views. Interactive panels can expose validated controls grounded in datasource contents. This interior is where Morphy’s metamorphic behavior lives.
 
-The intended outcome is a single host application that can support many analytical domains by combining:
+The most important constraint is that Morphy never gives the model arbitrary authority over the entire application. The model can influence bounded structures. It cannot rewrite the host shell. It cannot bypass the server’s data access rules. It cannot ship arbitrary privileged code into the browser. Every adaptive layer is routed through a contract the host understands.
 
-- config-defined domain scaffolding
-- server-side AI-driven reasoning
-- bounded runtime workspace adaptation
-- generated panel-specific browser widgets
+## System Overview
 
-The current primary example domain is HPC cluster observability over a VictoriaMetrics dataset with Slurm, ROCm GPU telemetry, fabric counters, storage health, and job-correlation signals.
+Morphy is a Node.js and Express application with a browser client. The server owns state, analysis, refresh scheduling, datasource access, and widget generation. The browser is primarily a subscriber and renderer of shared state rather than an autonomous analysis initiator.
 
-## Architectural Principles
+From the outside, a user experiences Morphy as a domain-specific analytical workspace. They choose or generate a domain, browse panels, run or force rerun analyses, inspect native charts and generated widgets, and optionally interact with filtered widgets such as `Job Explorer`. Underneath that surface, the server is maintaining a persistent shared picture of the domain. It periodically refreshes datasource previews, recalculates workspace plans, reruns stale panel analyses, and attaches widget artifacts to completed runs. Multiple users are therefore looking at the same current domain state rather than independently triggering duplicate model calls.
 
-### Stable Shell, Adaptive Interior
+Morphy currently supports heterogeneous data source types, including VictoriaMetrics, JSON-backed sources, and relational-style sample sources. The system is designed so that additional datasource adapters can be added without changing the host model. What changes across domains is not the server skeleton, but the domain configuration and the local tool recipes that explain how to interpret that data.
 
-Morphy keeps a stable application shell. The global navigation, layout frame, datasource controls, and hosting responsibilities stay deterministic.
+## Layers of the System
 
-The adaptive part of the system is the analytical workspace inside that shell:
+### The Host Server
 
-- which panels are emphasized
-- how panels are grouped
-- which presentation archetype a panel uses
-- what report content and widget are attached to a panel
+The entry point for the application is [src/server.js](src/server.js). This file wires together the major runtime services: configuration storage, datasource previewing, the agent runtime, widget generation, billing, logging, and the refresh coordinator. The Express server exposes the API surface used by the browser UI and also serves the browser app itself.
 
-### Bounded Metamorphosis
+The server does several jobs at once. It is the configuration service for domains and datasources. It is the shared-state service that returns bootstrap data to the browser. It is the orchestration layer that receives analysis requests and turns them into persistent runs. It is the live update hub through Server-Sent Events. It is also the artifact server for generated widgets. This concentration is deliberate in the current prototype: Morphy is easier to reason about when the authoritative state transitions remain on one side of the browser/server boundary.
 
-Morphy does not allow unconstrained runtime UI rewriting. Adaptation is limited by:
+### The Browser Host
 
-- domain scaffolding schema
-- planner output schema
-- archetype allow-lists
-- sandboxed widget execution
-- server-owned datasource access
+The browser client is implemented in [public/index.html](public/index.html), [public/app.js](public/app.js), and [public/styles.css](public/styles.css). The browser is not where privileged analysis happens. Instead, it renders the current shared state of the system and responds to updates as the server changes that state.
 
-This is the key design distinction. Morphy is self-modifying in a contextual sense, but only within contracts that the host application understands.
+The browser host is responsible for the visible structure of the application: the sidebar, panel rail, panel stage, spend display, Studio drawer, recent runs, and source preview views. It is also responsible for interpreting the bounded workspace plan and applying it to the UI. When the server says a panel should be focused, or that certain sections should be collapsed, the client applies those instructions. When the server says a run has completed or a widget has attached, the browser updates the relevant panel view.
 
-### Shared Server-Side Intelligence
+Crucially, the browser host also acts as the broker between sandboxed widgets and the rest of Morphy. The iframe widget cannot directly reach privileged APIs or datasource credentials. The browser host forwards allowed requests from widgets to Morphy’s server endpoints, then pushes filtered results back into the iframe over the widget bridge.
 
-Morphy is designed for multi-user analytical surfaces, not one isolated prompt session per browser. The server performs shared refresh and reasoning work, persists the results, and lets browsers subscribe to the current state.
+### Persistent Configuration and State
 
-That avoids:
+Morphy persists both static configuration and runtime state. The persistence layer lives behind [src/services/config-store.js](src/services/config-store.js).
 
-- duplicate model calls across users
-- inconsistent user views of the same domain
-- latency spikes caused by every page load triggering fresh reasoning
+Static configuration includes the application config in `config/app.config.json`, datasource definitions in `config/data-sources.json`, and domain scaffolding in `data/domains`. Runtime state is stored under `data/state`. This includes runs, workspace plans, live shared state, widgets, billing ledger entries, and related runtime objects.
 
-### Tool-First Analysis
+The decision to persist runtime state is fundamental to Morphy’s multi-user architecture. The server is not simply answering a live prompt per request and discarding the result. It is maintaining a domain state model across time. This allows newly opened browser sessions to receive the current operational picture immediately, rather than waiting for fresh model calls to reconstruct it.
 
-Morphy is moving toward a tool-first model. Deterministic local server-side tools do the ranking, aggregation, correlation, and basic analytical reduction work first. The model is then used mainly for:
+## Domain Configuration as the Starting Point
 
-- choosing priorities
-- selecting presentation archetypes
-- interpreting evidence
-- producing narratives and detail sections
-- generating presentation artifacts
+Morphy begins from domain configuration. A domain is a JSON document that describes what the analytical workspace is supposed to be about. The domain config gives Morphy a starting scaffold, but the goal is not for that scaffold to be the final fixed UI. Instead, it is the stable baseline from which bounded adaptation begins.
 
-This separation keeps raw data and heavy computation local while preserving adaptive model behavior where it is most valuable.
+The current primary domain example is [data/domains/hpcfund-cluster-observability.json](data/domains/hpcfund-cluster-observability.json), which reflects a VictoriaMetrics-backed GPU cluster monitoring scenario. That file defines domain identity, associated data source ids, domain-level analysis recipes, panel definitions, archetype policy, interaction contracts, and panel-level analysis recipes.
 
-The next architectural constraint is equally important: Morphy should not drift into a pile of hardcoded domain helpers. To preserve the metamorphic property of the system, the tool layer is being split into:
+Each panel in a domain has several different responsibilities encoded into config. It has a title and summary for the user-facing scaffold. It has an `analysisPrompt`, which still matters for the interpretive model call. It has archetype policy such as `allowedArchetypes`, `preferredArchetype`, and `archetypeGuidance`. It can also have an `interactionMode` and `interactionContract` if it is meant to behave as an interactive panel rather than a purely report-oriented one. Most importantly for the current architecture, it has an `analysisRecipe`, which describes how deterministic local tools should summarize the underlying data for that panel.
 
-- a stable execution substrate in code
-- domain- and panel-level `analysisRecipe` specifications generated or authored in config
-- a domain-specific exposed tool registry derived from those recipes
+This means the domain config is no longer just “panel labels and prompts.” It is the main point where Morphy’s metamorphic intent is encoded. A domain is telling the system not only what kind of workspace to show, but how to locally reduce evidence and what kinds of presentation families are valid.
 
-That means the runtime owns generic deterministic primitives, while the active domain configuration decides how those primitives are composed for the current form of the system.
+## Grounded Domain Creation
 
-### Reports First, Widgets Second
+One of the earlier architectural gaps in Morphy was that domain creation understood datasource configuration but not actual datasource contents. The current design moves beyond that. When Morphy generates a domain from Studio, it no longer relies only on the user prompt and datasource metadata. It also gathers live datasource discovery evidence and passes that into domain generation.
 
-The primary output of an analysis run is a structured report and native chart. Generated widgets are a secondary artifact attached to the run after the analysis completes.
+For VictoriaMetrics, that discovery evidence includes the active query window, representative query results, label keys, metric hints extracted from query expressions, and a bounded sample of actual result rows. For JSON and relational sources, the evidence includes row shapes, sample keys, numeric fields, and sample rows. This allows the model to generate a domain that reflects the semantic shape of the real source instead of simply guessing based on the datasource type.
 
-This gives Morphy:
+Generated domains now also persist `generationPrompt` and `generationEvidenceSummary`. This gives Morphy a lineage for future domain evolution: what the user asked for, and what datasource evidence most strongly shaped the resulting scaffold.
 
-- a reliable native rendering path
-- lower perceived failure when widget generation is delayed
-- a clean separation between analytical correctness and richer presentation
+## Datasource Adapters and Source Previews
 
-## Top-Level Components
+Morphy does not send full datasets to the model. Instead, it builds a **source preview**. A source preview is a bounded local summary of the underlying datasource state. It is intended to be compact enough to reuse and reason over, while still preserving enough signal for planning and analysis.
 
-### 1. Host Application
+Datasource previewing is implemented in [src/services/data-sources.js](src/services/data-sources.js). Each supported datasource type has its own strategy for constructing a preview. VictoriaMetrics uses predefined preview queries and returns bounded result samples together with query-window metadata. JSON-backed sources return sample rows and field hints. Relational-style sources return sample rows and column-like summaries.
 
-The host application is implemented with Node.js and Express. It is responsible for:
+The preview is important because it is the raw local substrate from which every higher-level reasoning step begins. It feeds deterministic local tools. It feeds workspace planning. It feeds analysis. It also underpins interactive validation, because the same preview evidence is used to generate valid job, host, or partition choices for interactive controls.
 
-- configuration loading
-- API endpoints
-- state persistence
-- datasource access
-- refresh coordination
-- serving the browser UI
-- serving generated widget artifacts
+Morphy refreshes previews on a cadence rather than rebuilding them for every browser request. That preview TTL is part of the shared refresh model described later in this document.
 
-Important entry point:
+## Deterministic Local Tooling
 
-- [src/server.js](src/server.js)
+Morphy follows a tool-first philosophy. The server should do as much deterministic ranking, grouping, correlation, and filtering work as possible before handing evidence to the model. This reduces token spend, improves responsiveness, and keeps raw data local. But if Morphy is supposed to remain metamorphic, the tool layer cannot collapse into a pile of fixed per-domain helpers. The architecture therefore distinguishes between a stable execution substrate and domain-specific recipes.
 
-### 2. Domain Scaffolding
+The stable execution substrate lives in [src/services/analysis-tools.js](src/services/analysis-tools.js). It knows how to execute compact operations such as `scalar` and `top_entries` over preview data. These are not bound to one specific domain. They are generic local primitives.
 
-Each domain is described in JSON. A domain defines:
+What varies by domain is the `analysisRecipe` configuration. A recipe is a domain- or panel-level description of which local evidence blocks should exist. A panel can specify blocks for backlog leaders, saturation leaders, hottest GPUs, recent jobs by node, utilization peaks, VRAM peaks, occupancy peaks, or any other compact deterministic summary expressible in the current recipe language. The runtime then executes those recipes locally.
 
-- domain identity
-- required datasource ids
-- domain-level analysis recipe
-- panel definitions
-- panel summaries
-- panel analysis prompts
-- preferred chart types
-- per-panel allowed archetypes
-- per-panel analysis recipes
+This is one of the most important architectural moves in Morphy. The code owns the execution substrate. The active domain configuration owns the way that substrate is composed for the current form of the system. That is how Morphy gains cost efficiency without giving up its metamorphic character.
 
-Example:
+## Derived Tool Registries
 
-- [data/domains/hpcfund-cluster-observability.json](data/domains/hpcfund-cluster-observability.json)
+Morphy now goes one step further than local deterministic summaries. From the current domain and panel recipes, it derives a **model-facing tool registry**. This registry is not the same as the stable primitive substrate. The substrate is internal and generic. The derived registry is the exposed analytical surface the model sees for the current domain.
 
-This scaffolding is the base structure from which runtime adaptation begins.
+For example, in one domain the model might be shown tools corresponding to backlog ranking, GPU hotspot ranking, or job correlation. In another domain, the registry could expose very different tools, even though underneath they are still built from the same small set of stable primitives. This keeps the system configurable by prompt and recipe without exposing arbitrary server code as a tool surface.
 
-The important current shift is that domain configs now describe not only UI scaffolding, but also the domain-specific local analysis behavior. The runtime owns the deterministic primitives; the active domain config owns how they are composed.
+The derived registry is visible in the Studio UI so that users can inspect what Morphy has projected from the current domain configuration. This is important both for debugging and for maintaining trust in the system’s metamorphic behavior.
 
-### 3. Datasource Adapters
+## Model-Directed Tool Calling
 
-Datasource adapters gather a **source preview**, which is Morphy’s compact summary of the underlying datasource state. A preview is not a full dump of the datasource. It is a bounded summary intended to inform planning and analysis.
+Morphy is no longer limited to merely presenting tool summaries to the model. It now has real model-directed tool invocation in several parts of the pipeline.
 
-Current adapters:
+The first such layer is workspace planning. The model can see a domain-specific derived tool registry, decide whether more evidence is needed, request one or more tools from that registry, and then receive the results back before producing a final workspace plan. The same pattern exists for archetype selection and for panel analysis itself. In each case the server validates requested tool ids, executes them locally through the deterministic substrate, and records the resulting tool trace.
 
-- JSON-backed previews
-- VictoriaMetrics preview queries
-- relational sample-row previews
+This means Morphy has crossed an important threshold. The model is no longer just consuming static prompt context prepared by the server. It can now choose bounded local tools from the current domain-specific registry and use their outputs to refine a decision. These traces are persisted and surfaced in the UI so that the behavior remains inspectable.
 
-Primary implementation:
+Widget generation can also use a model-directed tool loop for non-interactive widget generation. Interactive panels, however, now deliberately follow a different path, discussed below.
 
-- [src/services/data-sources.js](src/services/data-sources.js)
+## The Refresh Coordinator and Shared Runtime Model
 
-### 4. Agent Runtime
+Morphy is designed as a shared server runtime rather than a per-browser reasoning experience. That is why the refresh coordinator in [src/services/refresh-coordinator.js](src/services/refresh-coordinator.js) exists.
 
-The agent runtime orchestrates:
+The refresh coordinator periodically walks all configured domains. On each tick, it checks whether source previews are stale, whether workspace plans are stale, and which panel analyses should be refreshed. It does not rerun every panel every minute. Instead, it runs a bounded sweep per domain, currently limited by `panelsPerSweep`, and only reruns analyses that are stale enough to require it.
 
-- deterministic tool summarization
-- workspace planning
-- archetype selection
-- panel analysis
-- run completion
-- widget generation kickoff
+This design avoids duplicated model calls when multiple users are looking at the same domain. The browser is not the authority over whether a panel should be refreshed. The server is. The browser mostly consumes the current persisted snapshot of the domain and then subscribes for updates as that shared state evolves.
 
-Primary implementation:
-
-- [src/services/agent-runtime.js](src/services/agent-runtime.js)
-
-### 5. Refresh Coordinator
-
-The refresh coordinator runs the shared server-side refresh loop. It:
-
-- refreshes datasource previews
-- refreshes workspace plans
-- refreshes selected panels
-- deduplicates in-flight domain refresh work
-
-Primary implementation:
-
-- [src/services/refresh-coordinator.js](src/services/refresh-coordinator.js)
-
-### 6. Widget Service
-
-The widget service:
-
-- generates widget bundles
-- stores widget artifacts
-- injects run payloads into widget HTML
-- serves widget files
-- normalizes older widget bundles at serve time
-
-Primary implementation:
-
-- [src/services/widget-service.js](src/services/widget-service.js)
-
-### 7. Browser Host
-
-The browser host:
-
-- renders the stable shell
-- applies workspace plans
-- renders native charts and archetype detail cards
-- embeds generated widgets in iframes
-- subscribes to live SSE updates
-
-Primary implementation:
-
-- [public/index.html](public/index.html)
-- [public/app.js](public/app.js)
-- [public/styles.css](public/styles.css)
-
-### 8. Deterministic Tool Layer
-
-The deterministic tool layer computes local analytical summaries over preview data before model calls are made.
-
-Primary implementation:
-
-- [src/services/analysis-tools.js](src/services/analysis-tools.js)
-
-The substrate now executes recipe blocks such as:
-
-- `scalar`
-- `top_entries`
-
-Domain configs use those primitives to define the actual local analytical summaries for the domain and for each panel. For example, a panel can declare recipe blocks for:
-
-- backlog leaders by partition
-- partition saturation leaders
-- hottest GPUs
-- fabric/storage risk leaders
-- recent jobs by node
-- peak GPU utilization / VRAM / occupancy by job
-
-These outputs are intentionally compact and deterministic so that the model can reason over already-reduced evidence rather than large raw preview blobs.
-
-This is the main mechanism that keeps Morphy metamorphic while still reducing token spend: the code owns the stable execution substrate, while prompt-generated or authored config owns the domain-specific local analytical behavior.
-
-Morphy now distinguishes between:
-
-- **stable primitives**:
-  - `source_preview_coverage`
-  - `scalar_query_value`
-  - `ranked_query_entries`
-  - `recipe_execution`
-- **exposed tool registry**:
-  - domain- and panel-specific analytical tools derived from the active `analysisRecipe` blocks
-
-The model-facing registry is therefore specific to the current prompted configuration, even though the underlying execution substrate remains stable.
-
-## Runtime State Model
-
-Morphy persists runtime state under `data/state`.
-
-Important persisted objects:
-
-- live shared state
-- workspace plans
-- runs
-- widgets
-- billing ledger
-
-These paths are configured in:
-
-- [src/services/config-store.js](src/services/config-store.js)
-
-Tracked state includes:
-
-### Domain Snapshot
-
-A domain snapshot summarizes the server’s current shared view of a domain, including panel status and source previews.
-
-### Workspace Plan
-
-The workspace plan is the bounded planner output for a domain. It can include:
-
-- `layoutMode`
-- `focusPanelId`
-- `visiblePanelIds`
-- `panelGroups`
-- `collapsedSections`
-- `recommendedActions`
-- `rationale`
-
-### Run
-
-A run is the authoritative unit of analysis output. A run stores:
-
-- domain and panel identity
-- run status
-- report
-- selected archetype
-- widget lifecycle status
-- optional widget id and URL
-- analysis usage/cost
-- widget usage/cost
-
-### Widget Artifact
-
-A widget artifact is attached to a specific run and stored as:
-
-- `index.html`
-- `styles.css`
-- `widget.js`
-- `manifest.json`
-
-### Billing Ledger
-
-The billing ledger records model-specific usage and cost across:
-
-- workspace planning
-- archetype selection
-- panel analysis
-- widget generation
-
-## End-to-End Analytical Flow
-
-The current analytical flow is:
-
-1. Refresh coordinator chooses a domain to refresh.
-2. Datasource adapters refresh the domain’s source preview if stale.
-3. Deterministic local tools summarize the refreshed preview state.
-4. Morphy derives a domain- and panel-specific exposed tool registry from the active recipes.
-5. The fallback planner or model-driven planner ranks panels from recipe-derived local evidence.
-6. Workspace planning is rerun if stale.
-7. The coordinator selects a bounded set of panels for the current sweep.
-8. For each selected panel, Morphy either reuses a fresh run or starts a new analysis run.
-9. The analysis run selects an archetype from the allowed set.
-10. The analysis call returns a report using deterministic tool outputs as primary evidence.
-11. The run is marked complete for analysis.
-12. Widget generation starts asynchronously.
-13. The widget artifact is attached to the run when ready.
-14. SSE events notify connected browsers as state changes.
-
-This split is deliberate. Analysis and widget generation are separate phases.
-
-## Source Previews
-
-Morphy does not send full datasource contents to the model. Instead it builds a **source preview** from bounded query results or sample records.
-
-For VictoriaMetrics, the preview may include:
-
-- query window metadata
-- query name
-- result type
-- result count
-- a limited sample of result rows
-
-This preview is persisted and reused until its TTL expires.
-
-On top of the preview, Morphy now derives deterministic tool summaries. The preview is the raw local substrate; the tool summary is the reduced evidence passed to the model.
-
-For the HPCFund domain, queries include examples such as:
-
-- pending jobs by partition
-- partition CPU saturation
-- hottest GPUs by temperature
-- recent jobs by node
-- peak GPU utilization
-- peak GPU VRAM
-- peak GPU occupancy
+This architecture is also why Morphy has concepts like domain snapshots, live shared state, workspace plans, runs, widgets, and billing ledgers. All of these are parts of a persistent multi-user operational surface.
 
 ## Workspace Planning
 
-Workspace planning is a bounded form of metamorphic behavior.
+Workspace planning is one of Morphy’s central bounded metamorphic behaviors. The planner decides how the analytical workspace should be arranged without being allowed to rewrite the whole application.
 
-The planner can change:
+The planner can choose a focus panel, determine which panels are visible, group them in the panel rail, and decide which secondary sections start collapsed. It can also supply rationale and recommended actions for operator awareness and debugging. What it cannot do is mutate the outer shell, create arbitrary navigation, or bypass domain contracts.
 
-- the primary panel
-- which panels are visible
-- rail grouping
-- which secondary sections start collapsed
+The planner’s output is structured JSON, not prose interpreted as code. The browser applies the structured fields directly. The rationale is for humans, not a machine control surface. Even the fallback planner, when no model is used, now derives decisions from generic evidence density and run state rather than hardcoded panel ids.
 
-The planner cannot:
+## Archetypes as Bounded Presentation Families
 
-- rewrite the outer application shell
-- invent arbitrary new host UI
-- bypass panel or domain contracts
+Morphy uses archetypes to control presentation adaptivity. An archetype is a bounded presentation family such as `risk-scoreboard`, `pressure-board`, `timeline-analysis`, `correlation-inspector`, `incident-summary`, or `job-detail-sheet`. The current archetype definitions live in [src/lib/archetypes.js](src/lib/archetypes.js).
 
-The planner’s structured output is interpreted directly by the browser. Human-readable rationale is not used as a machine control surface.
+Archetypes matter in three distinct phases. During domain design, a panel declares which archetypes are allowed and which one is preferred. During runtime, Morphy selects one archetype for the current run based on current evidence, panel intent, and confidence. During rendering, the selected archetype influences the analysis contract, host-native detail rendering, and widget shape.
 
-In the current implementation, even the no-model fallback planner is no longer keyed to specific panel ids like `scheduler-pressure` or `gpu-hotspots`. It ranks the configured panels by evidence density from their local recipe outputs, boosts failed or missing runs generically, and produces a bounded workspace plan from that ranking.
+This is an important compromise in Morphy’s metamorphic design. The model can adapt presentation meaningfully, but only within a bounded vocabulary of shapes the system understands.
 
-## Archetype Layer
+## Analysis Runs
 
-Archetypes are Morphy’s bounded presentation families. Current archetypes include:
+The run is the authoritative unit of analytical output. When Morphy starts a run for a panel, it persists that run immediately and then steps it through a series of progress phases. Those phases include context preparation, workspace planning, archetype selection, analysis tool selection, analysis submission, analysis running, report finalization, and the widget phases that follow. The browser displays these phases so users can see that the server is working and where time is being spent.
 
-- `risk-scoreboard`
-- `pressure-board`
-- `timeline-analysis`
-- `correlation-inspector`
-- `incident-summary`
-- `job-detail-sheet`
+During analysis, Morphy now combines several kinds of evidence. It uses compact domain and panel summaries, the selected archetype and its contract, deterministic local findings, and optionally model-directed tool outputs chosen during the analysis phase itself. The model then returns a structured report with `narrative`, `highlights`, `details`, and `chart`. The report is normalized on the server before being persisted.
 
-Archetypes are defined in:
+The key design rule here is that Morphy now tries to reserve the model for interpretation and presentation, not for basic numeric reduction. Rankings, filtering, grouping, and similar operations are meant to happen locally first.
 
-- [src/lib/archetypes.js](src/lib/archetypes.js)
+## Widgets
 
-Archetypes matter at three levels:
+Widget generation is a secondary phase after analysis, not the primary analytical result. This distinction was introduced because widget generation was both expensive and latency-sensitive. By separating report completion from widget attachment, Morphy ensures that the analytical result can still appear even when a widget is slow or unavailable.
 
-### Design-Time Policy
+Widgets are stored as bundles under `data/state/widget-bundles`. A bundle contains `index.html`, `styles.css`, `widget.js`, and `manifest.json`. Each widget is attached to a specific run. For non-interactive panels, widget generation may still involve model-generated browser artifacts. For interactive panels, Morphy has moved toward deterministic local widget templates to improve reliability, cost, and interaction quality.
 
-Each panel can define:
+The widget payload is embedded into `index.html` as `window.__MORPHY_PAYLOAD__` and also updated over the widget bridge. This payload includes domain and panel metadata, selected archetype, report, local findings, interaction state, timestamps, and theme data.
 
-- `allowedArchetypes`
-- `preferredArchetype`
-- `archetypeGuidance`
+## Interactive Widgets
 
-This constrains which presentation families are valid for that panel.
+Interactive widgets required a different architecture from static or briefing-style widgets. A widget such as `Job Explorer` cannot be treated as a one-shot artifact bound forever to one payload. Users need to filter, validate, and reinterpret subsets of the data without regenerating the entire widget each time.
 
-### Runtime Selection
+Morphy therefore separates widget structure from widget data refresh. The widget code can remain stable while the user changes filters. The widget can ask the host for filtered data through the bridge. The server validates requested parameters against datasource-backed choices, recomputes interaction state locally, and returns a filtered payload. This is the cheap path.
 
-Before analysis, Morphy chooses one archetype from the allowed set based on:
+Morphy also now supports a second, explicit interaction path: **reinterpretation**. The user can request a model-backed reinterpretation of the currently filtered view. That does not regenerate the widget. Instead, it runs a scoped model call over the filtered evidence and returns refreshed narrative/highlights/detail content for the existing widget. This allows interactive widgets to remain responsive and cheap by default while still giving the user access to a richer interpretive pass when desired.
 
-- current datasource evidence
-- recipe-derived local findings
-- panel purpose
-- preferred archetype
-- confidence in the available signal
+Interactive widgets also expose validated controls. A job selector, host selector, partition selector, or date range control is not just a freeform input. Its values are derived from the underlying datasource evidence or validated against it. This is how Morphy keeps interactive panels grounded in the data.
 
-The chosen archetype is persisted on the run.
+## The Widget Bridge
 
-### Runtime Rendering
+The browser and widget communicate through [public/runtime/widget-bridge.js](public/runtime/widget-bridge.js). The bridge is intentionally narrow. Widgets can register `onInit` and `onUpdate` handlers. They can emit resize and ready events. They can request filtered data refresh. They can now also request reinterpretation for the current filtered state.
 
-The selected archetype influences:
+The browser host mediates those requests. It forwards them to Morphy’s server endpoints and then posts responses back into the iframe. This prevents widgets from directly reaching privileged APIs or unrestricted network surfaces.
 
-- analysis contract
-- host-native detail rendering
-- widget-generation prompt
+The bridge also supports interaction heartbeats so the host can tell when a user is actively interacting with a widget. Morphy uses that signal to avoid swapping in a newly generated widget artifact while the user is in the middle of entering data.
 
-This is how Morphy turns contextual information into bounded presentation change.
+## Widget Serving and Serve-Time Rebuilds
 
-In the current implementation, even heuristic archetype fallback is no longer hardcoded to specific panel ids. It scores the allowed archetypes from recipe metadata, evidence shape, and chart bias, then chooses the highest-scoring allowed archetype.
+One subtle architectural issue emerged while iterating on interactive widgets: saved widget bundles could become stale relative to improvements in the deterministic widget renderer. If local interactive widgets were stored once and then served forever from disk, browser reloads would not pick up newer renderer logic until another run regenerated the widget.
 
-The prompts used for planning, archetype selection, analysis, and widget generation now include the config-specific exposed tool registry as part of the model-facing context. This is the current bridge between prompt-defined domain shape and the stable local execution substrate.
+To fix that, Morphy now rebuilds **local interactive widgets at serve time** from the current renderer code. This means renderer fixes for interactive panels can take effect on page reload without requiring a fresh panel rerun just to pick up stale widget JS. Persisted widgets still exist as artifacts, but the local interactive template path is served from the current deterministic code rather than frozen historical bundle logic.
 
-## Archetype-Aware Analysis
+## Billing and Cost Visibility
 
-Morphy no longer treats all analysis output as the same generic structure. Each selected archetype carries a more specific analysis contract.
+Morphy tracks model usage and cost through [src/lib/billing.js](src/lib/billing.js). Billing entries record model name, operation type, token usage, and cost using a model-specific pricing table from configuration. The browser surfaces both global spend and panel-level or archetype-level spend where possible.
 
-The current design is:
+This matters architecturally because Morphy is intentionally experimenting with where AI should and should not be used. The system now makes it possible to observe that difference. For example, the move from model-generated interactive widgets to deterministic interactive templates produced a large speed and cost improvement. Cost visibility is therefore not just an administrative feature; it is part of the design feedback loop.
 
-- strict on shape
-- flexible on content
+## Diagnostics and Inspectability
 
-That means Morphy can require a `pressure-board` analysis to produce pressure-oriented sections without forcing one exact metric set or one rigid layout.
+Morphy has structured diagnostics on both the server and browser sides. These diagnostics are controlled by configuration and runtime overrides. They are intended to make a highly dynamic system legible. This is especially important because a metamorphic system can otherwise feel random or magical in the bad sense. Morphy’s diagnostics are there to ensure that adaptation can be explained.
 
-This preserves adaptivity while keeping rendering predictable.
-
-Fallback detail synthesis now follows the same principle. When the model output is incomplete, Morphy backfills archetype sections from generic evidence pools built from:
-
-- deterministic recipe findings
-- native chart leaders
-- narrative/highlight text
-- preview coverage notes
-
-That means archetype fallback stays bounded and archetype-specific without reverting to hardcoded panel/query rules.
-
-## Widget Architecture
-
-Widgets are browser-executable artifacts delivered through sandboxed iframes.
-
-### Widget Inputs
-
-The widget document receives a payload through:
-
-- embedded `window.__MORPHY_PAYLOAD__`
-- optional bridge updates from the host page
-
-The payload currently includes:
-
-- `runId`
-- compact `domain`
-- compact `panel`
-- selected `archetype`
-- `report`
-- compact `context`
-- timestamps
-- theme values
-
-Widgets are therefore mostly self-contained for initial render.
-
-### Widget Safety Model
-
-Widgets do not receive:
-
-- datasource credentials
-- unrestricted host APIs
-- arbitrary shell access
-
-They are hosted in a restricted iframe environment and communicate with the parent through a narrow bridge.
-
-### Widget Lifecycle
-
-For a given run:
-
-- analysis completes first
-- widget generation starts afterward
-- widget readiness is tracked separately
-
-This avoids blocking the main analytical result on code generation latency.
-
-## Shared Refresh Schedule
-
-The current default schedule is:
-
-- refresh tick: every `60s`
-- source preview TTL: `60s`
-- workspace plan TTL: `5m`
-- analysis TTL: `5m`
-- panels per domain sweep: `3`
-
-Practical effect:
-
-- each minute, Morphy checks each domain
-- datasource previews can refresh each minute
-- planning and panel analysis are only rerun when stale
-- up to three panels per domain are refreshed in a sweep
-
-This is selective refresh, not “rerun everything every minute.”
-
-## Concurrency Model
-
-Morphy is designed for bounded parallelism.
-
-Current behavior:
-
-- domains can refresh concurrently
-- panels within a sweep can run concurrently
-- widget generation can overlap with other panel analysis work
-
-This means multiple model calls can be in flight at the same time.
-
-Concurrency is bounded by:
-
-- domain refresh deduplication
-- sweep panel count limits
-- TTL-based reuse of fresh results
-
-## Prompt Context Strategy
-
-Morphy originally spent too much on large prompts and accumulated history. The current design reduces token usage by:
-
-- summarizing domain context instead of dumping whole objects
-- pushing ranking, aggregation, and correlation work into deterministic local tools
-- trimming datasource context per panel
-- limiting source preview samples
-- compacting workspace plan context
-- compacting recent run summaries
-- disabling response-history reuse by default
-
-This improves:
-
-- spend
-- latency
-- responsiveness
-
-without giving up panel relevance.
-
-It also changes where domain specificity lives. Instead of accumulating more fixed helper code in the runtime, Morphy now pushes more domain-specific analytical structure into `analysisRecipe` config and lets the runtime interpret it.
-
-The current target architecture is:
-
-- local tools for computation
-- model for planning and interpretation
-- generated widgets for presentation
-
-## Code Interpreter Outlook
-
-Morphy does not yet depend on Code Interpreter, but the architecture now anticipates it as a future execution tier.
-
-The intended use is selective, not default. Good candidate cases are:
-
-- ad hoc deeper tabular analysis
-- richer time-series decomposition
-- exploratory workload notebooks
-- one-off artifact generation beyond deterministic local tool coverage
-
-The design intent is:
-
-- deterministic local tools first
-- Code Interpreter second when a richer execution sandbox is justified
-- broader Codex App Server style integration later only if the agent-runtime benefits outweigh the added complexity
-
-## Billing And Cost Tracking
-
-Morphy now tracks model-specific spend using a pricing table configured in:
-
-- [config/app.config.json](config/app.config.json)
-
-Current billing behavior:
-
-- normalizes model usage
-- computes estimated cost by token class
-- persists usage records in a billing ledger
-- aggregates spend by model, operation, panel, and archetype
-- streams spend updates to the browser
-
-The browser can show:
-
-- total spend
-- input vs cached input vs output spend
-- panel-level cumulative spend
-- archetype-level cumulative spend
-- current run spend split between analysis and widget generation
-
-## Browser Synchronization
-
-Morphy uses a hybrid browser update model:
-
-- periodic bootstrap polling
-- SSE for live events
-
-Important SSE events:
-
-- `run.update`
-- `workspace.update`
-- `domain.refresh`
-- `spend.update`
-
-The browser is mainly a subscriber to shared server-side state, not the primary orchestrator of analytical work.
-
-## Debuggability
-
-Morphy includes structured diagnostics on both server and client sides.
-
-Diagnostics are parameter-driven and category-based, so tracing can be focused on:
-
-- refresh
-- analysis
-- widgets
-- planner
-- render
-- network
-- billing
-
-This is important for a metamorphic system because adaptive behavior is only operationally viable if its decisions and state transitions can be traced.
-
-## Security And Trust Boundaries
-
-Morphy treats the following as privileged:
-
-- datasource access
-- API keys
-- refresh orchestration
-- billing state
-- run persistence
-
-Generated widgets are intentionally non-privileged and sandboxed. They are presentation artifacts, not autonomous host controllers.
-
-This boundary is central to Morphy’s design. AI may influence presentation and analysis, but it does not directly own the application’s trust boundaries.
+The UI also exposes several inspectable artifacts directly, including derived tool registries, planner rationale, planner tool traces, archetype tool traces, analysis tool traces, spend summaries, and current domain prompt/source context.
 
 ## Current Constraints
 
-The current prototype still has important limits:
+Morphy is deliberately bounded. Those bounds are not accidental limitations; they are part of the architecture.
 
-- planner adaptation is bounded to existing scaffolding
-- widget validation against archetype contracts is still limited
-- widget generation can still be expensive
-- widgets are not yet reused across equivalent runs
-- panel-scaffold mutation is limited to workspace rearrangement rather than full scaffold deltas
-- the system still uses model APIs rather than a fuller Codex tool-execution harness
+The outer shell is not model-generated. Domain configs define scaffolding, but only within a schema the host understands. Archetypes come from a bounded vocabulary, even if panels can choose among different subsets of that vocabulary. Interactive widgets use a narrow bridge rather than arbitrary host access. Tool invocation is model-directed only where the server explicitly allows it, and always through a stable execution substrate. The server still owns persistence, refresh cadence, and datasource access.
 
-## Near-Term Evolution
+This means Morphy is adaptive, but not unbounded. It can change its current analytical form, but only in ways the host has been built to interpret.
 
-Likely next steps include:
+## Where Morphy Stands Now
 
-- stronger archetype-conformance validation
-- smarter widget regeneration policies
-- threshold-based widget reuse when underlying payload changes are minor
-- richer planner use of archetype intent
-- controlled scaffold-delta generation beyond simple panel reordering
-- more domain-specific query-packing and compact context policies
+At this point in the prototype, Morphy has several real metamorphic behaviors already working:
 
-## Design Summary
+It can generate or load domain scaffolding and ground domain generation in live datasource contents. It can derive domain-specific tool registries from recipe configuration. It can use model-directed tool invocation for workspace planning, archetype selection, and panel analysis. It can run deterministic local summaries first and reserve the model for interpretation. It can select bounded presentation archetypes at runtime. It can generate or locally construct widgets per run. It can host interactive widgets that validate controls, refresh filtered data locally, and optionally reinterpret filtered views with a model call.
 
-Morphy’s architecture is an attempt to make AI-driven software adaptation operationally credible.
+At the same time, several larger future directions remain open. The archetype vocabulary is still somewhat biased by the current HPC example. Code Interpreter is planned but not yet active. Codex App Server integration remains out of scope for now. And the long-term question of how far Morphy should go toward generated interactive workflows versus deterministic host templates is still an active design space.
 
-The core idea is not “let the model redesign the app whenever it wants.” The core idea is:
-
-- define bounded structures
-- let AI choose and fill those structures contextually
-- persist and share the results
-- expose enough diagnostics and lifecycle state that the system remains understandable
-
-That is what makes Morphy a metamorphic system rather than just a prompt-driven dashboard generator.
+What is important is that the current architecture has a coherent answer to the original design challenge. Morphy is becoming a system where prompt-generated domain form, stable local computation, bounded model reasoning, and browser-side presentation can all cooperate without collapsing into either a fixed dashboard or an unconstrained agent shell.
