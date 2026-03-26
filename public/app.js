@@ -14,9 +14,12 @@ const state = {
   activePanelId: null,
   isStudioOpen: false,
   panelRunState: {},
+  widgetInteractionLocks: {},
+  widgetInteractionState: {},
   sectionOverrides: {},
   bootstrapSignature: null,
   currentDomainRenderSignature: null,
+  currentPanelStageSignature: null,
   spendSummary: null
 };
 
@@ -39,6 +42,8 @@ const elements = {
   sourceForm: document.querySelector("#source-form"),
   agentStatus: document.querySelector("#agent-status"),
   spendSummary: document.querySelector("#spend-summary"),
+  domainContextSummary: document.querySelector("#domain-context-summary"),
+  deleteDomainButton: document.querySelector("#delete-domain-button"),
   toolRegistrySummary: document.querySelector("#tool-registry-summary"),
   resetSpendButton: document.querySelector("#reset-spend-button"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -51,6 +56,7 @@ const elements = {
 const panelTemplate = document.querySelector("#panel-card-template");
 const runTemplate = document.querySelector("#run-card-template");
 const STALE_RUN_MS = 5 * 60 * 1000;
+const WIDGET_INTERACTION_LOCK_MS = 2 * 60 * 1000;
 const logger = createBrowserLogger("app");
 
 async function request(url, options = {}) {
@@ -173,6 +179,67 @@ function visibleRunsForDomain(domainId) {
   return domainId ? state.runs.filter((run) => run.domainId === domainId) : state.runs;
 }
 
+function interactionLockKey(domainId, panelId) {
+  return `${domainId}:${panelId}`;
+}
+
+function getWidgetInteractionLock(domainId, panelId) {
+  const key = interactionLockKey(domainId, panelId);
+  const lock = state.widgetInteractionLocks[key] ?? null;
+
+  if (!lock) {
+    return null;
+  }
+
+  if (Date.now() - Number(lock.touchedAt ?? 0) > WIDGET_INTERACTION_LOCK_MS) {
+    delete state.widgetInteractionLocks[key];
+    return null;
+  }
+
+  return lock;
+}
+
+function touchWidgetInteractionLock(domainId, panelId, runId, widgetId) {
+  state.widgetInteractionLocks[interactionLockKey(domainId, panelId)] = {
+    domainId,
+    panelId,
+    runId,
+    widgetId,
+    touchedAt: Date.now()
+  };
+}
+
+function resolveDisplayedPanelRuns(domainId, panelId, domainRuns) {
+  const latestRun = latestRenderableRun(domainRuns, panelId);
+  const widgetRun = latestWidgetRun(domainRuns, panelId);
+  const activeRun = activePanelRun(domainRuns, panelId);
+  const lock = getWidgetInteractionLock(domainId, panelId);
+  const lockedRun = lock?.runId ? domainRuns.find((run) => run.id === lock.runId) ?? null : null;
+  const lockedWidgetRun = lockedRun?.widgetId ? lockedRun : null;
+  const effectiveLatestRun = lockedRun?.report ? lockedRun : latestRun;
+  const effectiveWidgetRun = lockedWidgetRun ?? widgetRun;
+  const hasPendingReplacement = Boolean(
+    lock &&
+    ((latestRun?.id && effectiveLatestRun?.id && latestRun.id !== effectiveLatestRun.id) ||
+      (widgetRun?.id && effectiveWidgetRun?.id && widgetRun.id !== effectiveWidgetRun.id))
+  );
+  const effectiveActiveRun =
+    lock && activeRun?.id && effectiveLatestRun?.id && activeRun.id !== effectiveLatestRun.id
+      ? null
+      : activeRun;
+
+  return {
+    lock,
+    latestRun,
+    widgetRun,
+    activeRun,
+    effectiveLatestRun,
+    effectiveWidgetRun,
+    effectiveActiveRun,
+    hasPendingReplacement
+  };
+}
+
 function domainRenderSignature(domainId) {
   if (!domainId) {
     return "no-domain";
@@ -244,6 +311,7 @@ function setSelectedDomain(domainId) {
     activePanelId: state.activePanelId
   }, "render");
   renderDomains();
+  renderDomainContext();
   renderToolRegistry();
   renderCurrentDomain();
 }
@@ -316,6 +384,110 @@ function renderToolRegistry() {
       ${cards || '<p class="hint">No derived tools are available for this domain yet.</p>'}
     </div>
   `;
+}
+
+function describeSourceLocation(source) {
+  if (source.type === "victoria-metrics") {
+    return source.baseUrl || "VictoriaMetrics endpoint not configured";
+  }
+
+  if (source.type === "json-file") {
+    return source.path || "JSON path not configured";
+  }
+
+  if (source.type === "relational") {
+    return source.connectionString || "Relational source configured via sample rows or sample data";
+  }
+
+  return "Source location not specified";
+}
+
+function renderDomainContext() {
+  if (!elements.domainContextSummary) {
+    return;
+  }
+
+  const domain = currentDomain();
+  if (elements.deleteDomainButton) {
+    elements.deleteDomainButton.disabled = !domain;
+  }
+
+  if (!domain) {
+    elements.domainContextSummary.innerHTML = `<p class="hint">Select a domain to inspect its originating prompt and configured datasource bindings.</p>`;
+    return;
+  }
+
+  const boundSources = state.dataSources.filter((source) => domain.dataSources.includes(source.id));
+  const promptMarkup = domain.generationPrompt
+    ? `<div class="domain-context-prompt">${escapeHtml(domain.generationPrompt)}</div>`
+    : `<p class="hint">This domain appears to be authored directly in config, so no original generation prompt is stored.</p>`;
+  const evidenceMarkup = domain.generationEvidenceSummary
+    ? `<div class="domain-context-prompt">${escapeHtml(domain.generationEvidenceSummary)}</div>`
+    : `<p class="hint">No explicit datasource-grounding summary is stored for this domain.</p>`;
+  const sourcesMarkup = boundSources.length
+    ? `
+      <div class="domain-source-list">
+        ${boundSources.map((source) => `
+          <article class="domain-source-item">
+            <p class="section-label">${escapeHtml(source.type)}</p>
+            <h4>${escapeHtml(source.name)}</h4>
+            <p class="source-description">${escapeHtml(source.description || "No source description provided.")}</p>
+            <div class="domain-source-meta">
+              <span class="domain-source-chip">${escapeHtml(source.id)}</span>
+              <span class="domain-source-chip">${escapeHtml(describeSourceLocation(source))}</span>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    `
+    : `<p class="hint">No datasource bindings are configured for this domain.</p>`;
+
+  elements.domainContextSummary.innerHTML = `
+    <div class="domain-context-block">
+      <p class="section-label">Original Prompt</p>
+      ${promptMarkup}
+    </div>
+    <div class="domain-context-block">
+      <p class="section-label">Grounding Summary</p>
+      ${evidenceMarkup}
+    </div>
+    <div class="domain-context-block">
+      <p class="section-label">Configured Data Sources</p>
+      ${sourcesMarkup}
+    </div>
+  `;
+}
+
+async function deleteCurrentDomain() {
+  const domain = currentDomain();
+
+  if (!domain) {
+    return;
+  }
+
+  const confirmed = window.confirm(`Delete domain "${domain.name}" and its saved runs, widgets, and workspace state?`);
+  if (!confirmed) {
+    return;
+  }
+
+  await request(`/api/domains/${encodeURIComponent(domain.id)}`, {
+    method: "DELETE"
+  });
+
+  delete state.workspacePlans[domain.id];
+  delete state.domainSnapshots[domain.id];
+  delete state.derivedToolRegistries[domain.id];
+  state.runs = state.runs.filter((run) => run.domainId !== domain.id);
+  state.widgets = state.widgets.filter((widget) => widget.domainId !== domain.id);
+  state.domains = state.domains.filter((entry) => entry.id !== domain.id);
+
+  const preferredDomainId = state.appConfig?.app?.defaultDomainId ?? null;
+  state.selectedDomainId = preferredDomainId && state.domains.some((entry) => entry.id === preferredDomainId)
+    ? preferredDomainId
+    : state.domains[0]?.id ?? null;
+  state.activePanelId = null;
+
+  await refresh();
 }
 
 function renderSourcePreviews() {
@@ -477,8 +649,6 @@ function currentDomainRenderSignature(domain) {
   const staleRun = panel ? stalePanelRun(domainRuns, panel.id) : null;
   const failedRun = panel ? failedPanelRun(domainRuns, panel.id) : null;
   const panelKey = panel ? `${domain.id}:${panel.id}` : null;
-  const panelSpend = panel ? summarizePanelSpend(domain.id, panel.id) : null;
-
   return JSON.stringify({
     domainId: domain.id,
     activePanelId: state.activePanelId,
@@ -501,10 +671,44 @@ function currentDomainRenderSignature(domain) {
           widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetStatus ?? null, widgetRun.widgetId ?? null] : null,
           activeRun: activeRun ? [activeRun.id, activeRun.updatedAt] : null,
           staleRun: staleRun ? [staleRun.id, staleRun.updatedAt] : null,
-          failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null,
-          panelSpend: panelSpend ? [panelSpend.totalUsd, panelSpend.entries] : null
+          failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null] : null
         }
       : null
+  });
+}
+
+function currentPanelStageSignature(domain) {
+  if (!domain) {
+    return "no-domain";
+  }
+
+  const orderedPanels = orderedPanelsForDomain(domain);
+  const panel = orderedPanels.find((entry) => entry.id === state.activePanelId) ?? orderedPanels[0] ?? null;
+
+  if (!panel) {
+    return "no-panel";
+  }
+
+  const domainRuns = visibleRunsForDomain(domain.id);
+  const resolvedRuns = resolveDisplayedPanelRuns(domain.id, panel.id, domainRuns);
+  const latestRun = resolvedRuns.effectiveLatestRun;
+  const widgetRun = resolvedRuns.effectiveWidgetRun;
+  const activeRun = resolvedRuns.effectiveActiveRun;
+  const staleRun = stalePanelRun(domainRuns, panel.id);
+  const failedRun = failedPanelRun(domainRuns, panel.id);
+  const panelKey = `${domain.id}:${panel.id}`;
+
+  return JSON.stringify({
+    domainId: domain.id,
+    panelId: panel.id,
+    transientState: state.panelRunState[panelKey] ?? null,
+    latestRun: latestRun ? [latestRun.id, latestRun.updatedAt, latestRun.status, latestRun.widgetStatus ?? null, latestRun.widgetId ?? null] : null,
+    widgetRun: widgetRun ? [widgetRun.id, widgetRun.updatedAt, widgetRun.widgetStatus ?? null, widgetRun.widgetId ?? null] : null,
+    activeRun: activeRun ? [activeRun.id, activeRun.updatedAt, activeRun.progressPhase ?? null, activeRun.progressLabel ?? null, activeRun.widgetStatus ?? null] : null,
+    staleRun: staleRun ? [staleRun.id, staleRun.updatedAt, staleRun.widgetStatus ?? null] : null,
+    failedRun: failedRun ? [failedRun.id, failedRun.updatedAt, failedRun.error ?? null, failedRun.widgetError ?? null] : null,
+    interactionLock: resolvedRuns.lock ? [resolvedRuns.lock.runId ?? null, resolvedRuns.lock.widgetId ?? null] : null,
+    hasPendingReplacement: resolvedRuns.hasPendingReplacement
   });
 }
 
@@ -761,7 +965,26 @@ function renderPlaceholderChart(kind = "bar") {
 }
 
 function widgetPayload(run, domain, panel) {
+  const interactionOverride = run ? state.widgetInteractionState[run.id] ?? null : null;
   const queryWindow = run?.context?.previews?.find((preview) => preview?.detail?.queryWindow)?.detail?.queryWindow ?? null;
+  const interactionData = interactionOverride?.data ?? null;
+  const reportOverride = interactionData?.report
+    ? {
+        ...run.report,
+        ...interactionData.report,
+        chart: interactionData.chart ?? interactionData.report?.chart ?? run.report?.chart ?? null,
+        narrative: interactionData.report?.narrative?.length ? interactionData.report.narrative : run.report?.narrative ?? [],
+        highlights: interactionData.report?.highlights?.length ? interactionData.report.highlights : run.report?.highlights ?? [],
+        details: interactionData.report?.details?.length ? interactionData.report.details : run.report?.details ?? []
+      }
+    : run.report;
+  const contextOverride = interactionOverride
+    ? {
+        ...(run.context ?? {}),
+        coverage: interactionData?.coverage ?? run.context?.coverage ?? null,
+        findings: interactionData?.findings ?? interactionData?.localFindings?.findings ?? run.context?.findings ?? null
+      }
+    : run.context;
   return {
     runId: run.id,
     domain,
@@ -772,8 +995,9 @@ function widgetPayload(run, domain, panel) {
       reason: run.archetypeReason ?? null,
       confidence: run.archetypeConfidence ?? null
     },
-    report: run.report,
-    context: run.context,
+    report: reportOverride,
+    context: contextOverride,
+    interaction: interactionOverride ?? null,
     timestamps: {
       runCreatedAt: run.createdAt ?? null,
       runUpdatedAt: run.updatedAt ?? null,
@@ -886,6 +1110,18 @@ function renderWidgetStatus(run, widgetRun) {
   return "";
 }
 
+function renderInteractionLockNotice(hasPendingReplacement) {
+  if (!hasPendingReplacement) {
+    return "";
+  }
+
+  return `
+    <div class="widget-status widget-status-pending">
+      <strong>Interactive widget is pinned.</strong> Morphy detected active interaction and is keeping this widget in place. A newer analysis or widget is available and will appear after the interaction lock expires.
+    </div>
+  `;
+}
+
 function renderRunLifecycle(run, transientState) {
   if (transientState?.status === "starting") {
     return `
@@ -908,7 +1144,10 @@ function renderRunLifecycle(run, transientState) {
 
   const phaseLabel = run.progressLabel || null;
   const phaseNote = run.progressMessage || null;
-  const effectiveWidgetStatus = run.widgetStatus ?? (run.widgetId ? "completed" : "idle");
+  const effectiveWidgetStatus =
+    run.widgetStatus === "idle" && (run.status === "queued" || run.status === "in_progress")
+      ? "pending"
+      : (run.widgetStatus ?? (run.widgetId ? "completed" : "idle"));
   const analysisLabel = run.status === "queued"
     ? "Preparing"
     : run.status === "in_progress"
@@ -1107,6 +1346,10 @@ function renderArchetypeMeta(panel, run, domain) {
   const archetypeSpend = domain && run?.selectedArchetype ? summarizePanelSpend(domain.id, panel.id, run.selectedArchetype) : null;
   const archetypeToolTrace = Array.isArray(run?.archetypeToolTrace) ? run.archetypeToolTrace : [];
   const archetypeToolMode = run?.archetypeToolMode ?? null;
+  const analysisToolTrace = Array.isArray(run?.analysisToolTrace) ? run.analysisToolTrace : [];
+  const analysisToolMode = run?.analysisToolMode ?? null;
+  const widgetToolTrace = Array.isArray(run?.widgetToolTrace) ? run.widgetToolTrace : [];
+  const widgetToolMode = run?.widgetToolMode ?? null;
   const archetypeToolTraceMarkup = run
     ? archetypeToolTrace.length
       ? `
@@ -1122,6 +1365,40 @@ function renderArchetypeMeta(panel, run, domain) {
       `
       : archetypeToolMode
         ? `<p class="panel-archetype-meta">Selection tools: ${escapeHtml(archetypeToolMode)}</p>`
+        : ""
+    : "";
+  const analysisToolTraceMarkup = run
+    ? analysisToolTrace.length
+      ? `
+        <div class="archetype-tool-trace">
+          <p class="panel-archetype-meta">Analysis tools: ${escapeHtml(analysisToolMode || "model-directed")}</p>
+          ${analysisToolTrace.map((entry) => `
+            <div class="archetype-tool-trace-card">
+              <strong>${escapeHtml(entry.title || entry.toolId)}</strong>
+              <p class="panel-archetype-meta">${escapeHtml(entry.purpose || entry.operation || "")}</p>
+            </div>
+          `).join("")}
+        </div>
+      `
+      : analysisToolMode
+        ? `<p class="panel-archetype-meta">Analysis tools: ${escapeHtml(analysisToolMode)}</p>`
+        : ""
+    : "";
+  const widgetToolTraceMarkup = run
+    ? widgetToolTrace.length
+      ? `
+        <div class="archetype-tool-trace">
+          <p class="panel-archetype-meta">Widget tools: ${escapeHtml(widgetToolMode || "model-directed")}</p>
+          ${widgetToolTrace.map((entry) => `
+            <div class="archetype-tool-trace-card">
+              <strong>${escapeHtml(entry.title || entry.toolId)}</strong>
+              <p class="panel-archetype-meta">${escapeHtml(entry.purpose || entry.operation || "")}</p>
+            </div>
+          `).join("")}
+        </div>
+      `
+      : widgetToolMode
+        ? `<p class="panel-archetype-meta">Widget tools: ${escapeHtml(widgetToolMode)}</p>`
         : ""
     : "";
   const runSpend = currentRunSpend(run);
@@ -1150,6 +1427,8 @@ function renderArchetypeMeta(panel, run, domain) {
         </div>
         ${spendMeta}
         ${archetypeToolTraceMarkup}
+        ${analysisToolTraceMarkup}
+        ${widgetToolTraceMarkup}
         ${guidance}
       </div>
     `;
@@ -1169,6 +1448,8 @@ function renderArchetypeMeta(panel, run, domain) {
       <p class="panel-archetype-meta">${escapeHtml(confidence)}</p>
       ${spendMeta}
       ${archetypeToolTraceMarkup}
+      ${analysisToolTraceMarkup}
+      ${widgetToolTraceMarkup}
       ${reason}
     </div>
   `;
@@ -1236,6 +1517,92 @@ function bindWidgetFrames() {
   });
 }
 
+async function handleWidgetDataRequest(frame, message) {
+  const requestId = message.payload?.requestId ?? null;
+  try {
+    const result = await request(`/api/panels/${encodeURIComponent(frame.dataset.domainId)}/${encodeURIComponent(frame.dataset.panelId)}/interaction/data`, {
+      method: "POST",
+      body: JSON.stringify({
+        runId: frame.dataset.runId,
+        params: message.payload?.params ?? {}
+      })
+    });
+    const runId = frame.dataset.runId ?? null;
+    if (runId && result?.interaction) {
+      state.widgetInteractionState[runId] = result.interaction;
+    }
+
+    frame.contentWindow?.postMessage(
+      {
+        source: "morphy-host",
+        type: "widget:data-response",
+        sessionId: frame.dataset.sessionId,
+        requestId,
+        payload: result
+      },
+      "*"
+    );
+  } catch (error) {
+    frame.contentWindow?.postMessage(
+      {
+        source: "morphy-host",
+        type: "widget:data-error",
+        sessionId: frame.dataset.sessionId,
+        requestId,
+        payload: {
+          error: error.message
+        }
+      },
+      "*"
+    );
+  }
+}
+
+async function handleWidgetInterpretationRequest(frame, message) {
+  const requestId = message.payload?.requestId ?? null;
+  try {
+    const result = await request(`/api/panels/${encodeURIComponent(frame.dataset.domainId)}/${encodeURIComponent(frame.dataset.panelId)}/interaction/reinterpret`, {
+      method: "POST",
+      body: JSON.stringify({
+        runId: frame.dataset.runId,
+        params: message.payload?.params ?? {}
+      })
+    });
+    const runId = frame.dataset.runId ?? null;
+    if (runId && result?.interaction) {
+      state.widgetInteractionState[runId] = result.interaction;
+      state.spendSummary = null;
+      void refresh().catch((error) => {
+        logger.warn("Failed to refresh spend state after reinterpretation", { error: error.message }, "network");
+      });
+    }
+
+    frame.contentWindow?.postMessage(
+      {
+        source: "morphy-host",
+        type: "widget:reinterpretation-response",
+        sessionId: frame.dataset.sessionId,
+        requestId,
+        payload: result
+      },
+      "*"
+    );
+  } catch (error) {
+    frame.contentWindow?.postMessage(
+      {
+        source: "morphy-host",
+        type: "widget:reinterpretation-error",
+        sessionId: frame.dataset.sessionId,
+        requestId,
+        payload: {
+          error: error.message
+        }
+      },
+      "*"
+    );
+  }
+}
+
 function renderCurrentDomain() {
   const domain = currentDomain();
 
@@ -1265,6 +1632,7 @@ function renderCurrentDomain() {
   elements.domainDescription.textContent = domain.description;
   elements.domainChip.textContent = `${domain.panels.length} panels`;
   const nextRenderSignature = currentDomainRenderSignature(domain);
+  const nextStageSignature = currentPanelStageSignature(domain);
 
   if (state.currentDomainRenderSignature === nextRenderSignature) {
     logger.trace("Skipping render because signature is unchanged", {
@@ -1281,7 +1649,6 @@ function renderCurrentDomain() {
     orderedPanelIds: orderedPanels.map((panel) => panel.id)
   }, "render");
   elements.panelRail.innerHTML = "";
-  elements.panelStage.innerHTML = "";
   renderWorkspacePlan(workspacePlan);
 
   const domainRuns = visibleRunsForDomain(domain.id);
@@ -1323,15 +1690,28 @@ function renderCurrentDomain() {
 
   if (!panel) {
     elements.panelStage.innerHTML = `<p class="hint">No panels are defined for this domain.</p>`;
+    state.currentPanelStageSignature = "no-panel";
     return;
   }
+
+  if (state.currentPanelStageSignature === nextStageSignature) {
+    logger.trace("Skipping panel stage rebuild because signature is unchanged", {
+      domainId: domain.id,
+      panelId: panel.id
+    }, "render");
+    return;
+  }
+
+  state.currentPanelStageSignature = nextStageSignature;
+  elements.panelStage.innerHTML = "";
 
   const node = panelTemplate.content.firstElementChild.cloneNode(true);
   const panelKey = `${domain.id}:${panel.id}`;
   const transientState = state.panelRunState[panelKey] ?? null;
-  const latestRun = latestRenderableRun(domainRuns, panel.id);
-  const widgetRun = latestWidgetRun(domainRuns, panel.id);
-  const activeRun = activePanelRun(domainRuns, panel.id);
+  const resolvedRuns = resolveDisplayedPanelRuns(domain.id, panel.id, domainRuns);
+  const latestRun = resolvedRuns.effectiveLatestRun;
+  const widgetRun = resolvedRuns.effectiveWidgetRun;
+  const activeRun = resolvedRuns.effectiveActiveRun;
   const staleRun = stalePanelRun(domainRuns, panel.id);
   const failedRun = failedPanelRun(domainRuns, panel.id);
   const lifecycleRun = activeRun ?? latestRun ?? failedRun ?? staleRun ?? null;
@@ -1345,7 +1725,7 @@ function renderCurrentDomain() {
   node.querySelector(".chart-title").textContent = (latestRun?.widgetId || widgetRun?.widgetId)
     ? "Generated Browser Visualization"
     : latestRun?.report?.chart?.title || "Awaiting chart output";
-  node.querySelector(".chart-target").innerHTML = renderVisualization(latestRun, domain, panel, widgetRun);
+  node.querySelector(".chart-target").innerHTML = `${renderInteractionLockNotice(resolvedRuns.hasPendingReplacement)}${renderVisualization(latestRun, domain, panel, widgetRun)}`;
   node.querySelector(".panel-archetype-shell").innerHTML = renderArchetypeMeta(panel, panelMetaRun, domain);
   node.querySelector(".report-shell").innerHTML = latestRun?.report
     ? `
@@ -1489,6 +1869,7 @@ async function refresh() {
   renderAgentStatus(payload.agent);
   renderSpendSummary();
   renderDomains();
+  renderDomainContext();
   renderToolRegistry();
   renderSourcePreviews();
   if (shouldRenderCurrentDomain) {
@@ -1693,10 +2074,10 @@ function connectEvents() {
     state.runs = [run, ...state.runs.filter((entry) => entry.id !== run.id)].sort(
       (left, right) => new Date(right.updatedAt) - new Date(left.updatedAt)
     );
-    if (run.domainId === state.selectedDomainId) {
+    if (run.domainId === state.selectedDomainId && (!state.activePanelId || run.panelId === state.activePanelId)) {
       renderCurrentDomain();
-      renderRuns();
     }
+    renderRuns();
   });
   events.addEventListener("workspace.update", (event) => {
     const workspacePlan = JSON.parse(event.data);
@@ -1751,9 +2132,6 @@ function connectEvents() {
       entries: state.spendSummary?.totals?.entries ?? 0
     }, "events");
     renderSpendSummary();
-    if (state.selectedDomainId) {
-      renderCurrentDomain();
-    }
   });
 }
 
@@ -1796,6 +2174,35 @@ window.addEventListener("message", (event) => {
     const nextHeight = Math.max(240, Number(message.payload?.height) || 240);
     frame.style.height = `${nextHeight}px`;
   }
+
+  if (message.type === "widget:request-data") {
+    handleWidgetDataRequest(frame, message).catch((error) => {
+      logger.warn("Widget data request failed", {
+        widgetId: frame.dataset.widgetId,
+        runId: frame.dataset.runId,
+        error: error.message
+      }, "widgets");
+    });
+  }
+
+  if (message.type === "widget:request-interpretation") {
+    handleWidgetInterpretationRequest(frame, message).catch((error) => {
+      logger.warn("Widget reinterpretation request failed", {
+        widgetId: frame.dataset.widgetId,
+        runId: frame.dataset.runId,
+        error: error.message
+      }, "widgets");
+    });
+  }
+
+  if (message.type === "widget:interaction") {
+    touchWidgetInteractionLock(
+      frame.dataset.domainId,
+      frame.dataset.panelId,
+      frame.dataset.runId,
+      frame.dataset.widgetId
+    );
+  }
 });
 
 window.addEventListener("keydown", (event) => {
@@ -1818,6 +2225,12 @@ elements.refreshButton.addEventListener("click", () => {
 
 elements.resetSpendButton?.addEventListener("click", () => {
   resetSpend().catch((error) => window.alert(error.message));
+});
+
+elements.deleteDomainButton?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  deleteCurrentDomain().catch((error) => window.alert(error.message));
 });
 
 if (elements.sourcePreviewSection) {

@@ -400,6 +400,73 @@
         "timeline-analysis",
         "correlation-inspector"
       ],
+      "interactionMode": "hybrid",
+      "interactionContract": {
+        "summary": "Allow the operator to drill into specific jobs, partitions, hosts, and date windows without regenerating the widget.",
+        "controls": [
+          {
+            "id": "job-selector",
+            "label": "Jobs",
+            "description": "Select one or more Slurm jobs from the visible workload evidence.",
+            "type": "multi_select",
+            "parameter": "jobIds",
+            "source": "label_values",
+            "queryName": "recentJobsByNode",
+            "field": "jobid",
+            "displayFields": [
+              "user",
+              "jobid",
+              "partition",
+              "instance"
+            ],
+            "maxOptions": 18,
+            "multiple": true,
+            "defaultStrategy": "none"
+          },
+          {
+            "id": "partition-selector",
+            "label": "Partitions",
+            "description": "Filter the job view by partition.",
+            "type": "multi_select",
+            "parameter": "partitions",
+            "source": "label_values",
+            "queryName": "recentJobsByNode",
+            "field": "partition",
+            "displayFields": [
+              "partition"
+            ],
+            "maxOptions": 12,
+            "multiple": true,
+            "defaultStrategy": "none"
+          },
+          {
+            "id": "instance-selector",
+            "label": "Hosts",
+            "description": "Limit the view to selected hosts.",
+            "type": "multi_select",
+            "parameter": "instances",
+            "source": "label_values",
+            "queryName": "recentJobsByNode",
+            "field": "instance",
+            "displayFields": [
+              "instance"
+            ],
+            "maxOptions": 16,
+            "multiple": true,
+            "defaultStrategy": "none"
+          },
+          {
+            "id": "window-selector",
+            "label": "Date Range",
+            "description": "Re-query the visible analysis window for the selected job view.",
+            "type": "date_range",
+            "parameter": "dateRange",
+            "source": "query_window",
+            "multiple": false,
+            "defaultStrategy": "top"
+          }
+        ]
+      },
       "preferredArchetype": "job-detail-sheet",
       "archetypeGuidance": "Use job-detail-sheet when the analysis can focus on a few jobs. Use timeline-analysis for behavior-over-window stories and correlation-inspector for broader workload attribution.",
       "analysisRecipe": {

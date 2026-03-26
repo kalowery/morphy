@@ -256,6 +256,333 @@ function summarizeRecipeDefinition(recipe) {
   };
 }
 
+function normalizeInteractionContract(panel) {
+  const contract = panel?.interactionContract ?? {};
+  const controls = Array.isArray(contract.controls)
+    ? contract.controls
+        .filter((control) => control?.id && control?.parameter && control?.type)
+        .map((control) => ({
+          id: control.id,
+          label: control.label ?? control.id,
+          description: control.description ?? "",
+          type: control.type,
+          parameter: control.parameter,
+          source: control.source ?? null,
+          queryName: control.queryName ?? null,
+          field: control.field ?? null,
+          displayFields: Array.isArray(control.displayFields) ? control.displayFields.filter(Boolean) : [],
+          maxOptions: Number.isInteger(control.maxOptions) ? control.maxOptions : 24,
+          multiple: control.multiple !== false,
+          required: Boolean(control.required),
+          defaultStrategy: control.defaultStrategy ?? "none"
+        }))
+    : [];
+
+  return {
+    mode: panel?.interactionMode ?? (controls.length ? "interactive" : "report"),
+    summary: contract.summary ?? "",
+    controls
+  };
+}
+
+function buildControlOptionLabel(metric, control) {
+  const displayFields = control.displayFields.length ? control.displayFields : [control.field];
+  const values = displayFields
+    .map((field) => metric?.[field])
+    .filter((value) => value !== undefined && value !== null && value !== "");
+  return values.length ? values.join(" · ") : String(metric?.[control.field] ?? "");
+}
+
+function collectControlOptions(control, context) {
+  if (control.source === "query_window") {
+    const queryWindow = firstQueryWindow(context);
+    if (!queryWindow) {
+      return [];
+    }
+
+    return [
+      {
+        value: {
+          start: queryWindow.start ?? null,
+          end: queryWindow.end ?? null
+        },
+        label: queryWindow.start && queryWindow.end
+          ? `${queryWindow.start} to ${queryWindow.end}`
+          : "Visible query window"
+      }
+    ];
+  }
+
+  if (!control.queryName || !control.field) {
+    return [];
+  }
+
+  const sample = querySample(context, control.queryName);
+  const options = [];
+
+  for (const entry of sample) {
+    const metric = entry?.metric ?? {};
+    const value = metric[control.field];
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+
+    const stringValue = String(value);
+    if (!options.some((option) => option.value === stringValue)) {
+      options.push({
+        value: stringValue,
+        label: buildControlOptionLabel(metric, control)
+      });
+    }
+
+    if (options.length >= control.maxOptions) {
+      break;
+    }
+  }
+
+  return options;
+}
+
+function defaultSelectionForControl(control, options) {
+  if (control.source === "query_window") {
+    return options[0]?.value ?? null;
+  }
+
+  if (control.defaultStrategy === "top" && options.length) {
+    return control.multiple ? [options[0].value] : options[0].value;
+  }
+
+  if (control.defaultStrategy === "all" && options.length) {
+    return control.multiple ? options.map((option) => option.value) : options[0].value;
+  }
+
+  return control.multiple ? [] : null;
+}
+
+function normalizeControlValue(control, rawValue, options) {
+  if (control.source === "query_window") {
+    const fallback = options[0]?.value ?? { start: null, end: null };
+    const start = rawValue?.start ?? fallback.start ?? null;
+    const end = rawValue?.end ?? fallback.end ?? null;
+    return { start, end };
+  }
+
+  const validValues = new Set(options.map((option) => option.value));
+  if (control.multiple) {
+    const values = Array.isArray(rawValue) ? rawValue.map((value) => String(value)) : [];
+    return values.filter((value) => validValues.has(value));
+  }
+
+  const stringValue = rawValue == null ? null : String(rawValue);
+  return stringValue && validValues.has(stringValue) ? stringValue : null;
+}
+
+function metricMatchesSelection(metric, control, value) {
+  if (!control.field || control.source === "query_window") {
+    return true;
+  }
+
+  const metricValue = metric?.[control.field];
+  if (metricValue == null || metricValue === "") {
+    return false;
+  }
+
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      return true;
+    }
+    return value.includes(String(metricValue));
+  }
+
+  if (value == null || value === "") {
+    return true;
+  }
+
+  return String(metricValue) === String(value);
+}
+
+function filterFindingsBySelections(findings, contract, values) {
+  const selectionControls = contract.controls.filter((control) => control.source !== "query_window");
+  if (!selectionControls.length) {
+    return findings;
+  }
+
+  return findings.map((finding) => {
+    if (!Array.isArray(finding?.entries)) {
+      return finding;
+    }
+
+    const filteredEntries = finding.entries.filter((entry) =>
+      selectionControls.every((control) => metricMatchesSelection(entry.metric ?? {}, control, values[control.parameter]))
+    );
+
+    return {
+      ...finding,
+      entries: filteredEntries
+    };
+  });
+}
+
+function buildChartFromFindings(findings, panel) {
+  const candidate = findings.find((finding) => Array.isArray(finding?.entries) && finding.entries.length) ?? null;
+  if (!candidate) {
+    return null;
+  }
+
+  return {
+    type: panel?.chartPreference ?? "bar",
+    title: candidate.title,
+    labels: candidate.entries.map((entry) => entry.label),
+    values: candidate.entries.map((entry) => Number(entry.value ?? 0))
+  };
+}
+
+function buildDetailsFromFindings(findings) {
+  return findings
+    .filter((finding) => Array.isArray(finding?.entries) && finding.entries.length)
+    .slice(0, 4)
+    .map((finding) => ({
+      title: finding.title,
+      items: finding.entries.slice(0, 5).map((entry) => `${entry.label}: ${entry.displayValue}`)
+    }));
+}
+
+function summarizeInteractionFilters(values = {}) {
+  const parts = [];
+
+  if (Array.isArray(values.jobIds) && values.jobIds.length) {
+    parts.push(`${values.jobIds.length} job${values.jobIds.length === 1 ? "" : "s"}`);
+  }
+
+  if (values.partition) {
+    parts.push(`partition ${values.partition}`);
+  }
+
+  if (values.instance) {
+    parts.push(`host ${values.instance}`);
+  }
+
+  if (values.dateRange?.start || values.dateRange?.end) {
+    const start = values.dateRange.start ? String(values.dateRange.start).slice(0, 10) : "open";
+    const end = values.dateRange.end ? String(values.dateRange.end).slice(0, 10) : "open";
+    parts.push(`window ${start} to ${end}`);
+  }
+
+  return parts;
+}
+
+function buildNarrativeFromFindings(findings, coverage, values, panel) {
+  const rankedFindings = findings
+    .filter((finding) => Array.isArray(finding?.entries) && finding.entries.length)
+    .slice(0, 3);
+  const filterSummary = summarizeInteractionFilters(values);
+  const queryWindow = coverage?.queryWindow ?? null;
+  const windowSummary = queryWindow?.start || queryWindow?.end
+    ? `${String(queryWindow.start ?? "").slice(0, 10)} to ${String(queryWindow.end ?? queryWindow.evaluationTime ?? "").slice(0, 10)}`
+    : "the available preview window";
+
+  if (!rankedFindings.length) {
+    return [
+      `No strong ${panel?.title?.toLowerCase?.() ?? "panel"} findings matched the current interactive filters.`,
+      `Current scope covers ${filterSummary.join(", ") || "the full available selection set"} across ${windowSummary}.`
+    ];
+  }
+
+  const leadFinding = rankedFindings[0];
+  const leadEntry = leadFinding.entries[0];
+  const firstLine = `${leadFinding.title} is led by ${leadEntry.label} at ${leadEntry.displayValue} for ${filterSummary.join(", ") || "the current scope"}.`;
+  const secondLine = rankedFindings[1]
+    ? `${rankedFindings[1].title} also remains elevated in this filtered view, while the evidence window covers ${windowSummary}.`
+    : `The filtered view is grounded in ${windowSummary} and retains ${rankedFindings.length} ranked evidence block${rankedFindings.length === 1 ? "" : "s"}.`;
+
+  return [firstLine, secondLine];
+}
+
+export function getInteractionDateRangeOverrides(panel, params = {}, context = null) {
+  const contract = normalizeInteractionContract(panel);
+  const control = contract.controls.find((entry) => entry.type === "date_range" && entry.source === "query_window");
+  if (!control) {
+    return {};
+  }
+
+  const options = collectControlOptions(control, context ?? { previews: [] });
+  const normalized = normalizeControlValue(control, params[control.parameter], options);
+  if (!normalized?.start && !normalized?.end) {
+    return {};
+  }
+
+  return {
+    defaultEvaluationTime: normalized.end ?? null,
+    start: normalized.start ?? null,
+    end: normalized.end ?? null
+  };
+}
+
+export function buildPanelInteractionState(panel, context, params = {}) {
+  const contract = normalizeInteractionContract(panel);
+  const controls = contract.controls.map((control) => {
+    const options = collectControlOptions(control, context);
+    const selectedValue = normalizeControlValue(
+      control,
+      params[control.parameter] ?? defaultSelectionForControl(control, options),
+      options
+    );
+
+    return {
+      ...control,
+      options,
+      value: selectedValue
+    };
+  });
+
+  const values = Object.fromEntries(controls.map((control) => [control.parameter, control.value]));
+  const summary = buildDeterministicPanelSummary(panel, context);
+  const filteredFindings = filterFindingsBySelections(summary.findings, contract, values);
+  const filteredSummary = {
+    ...summary,
+    findings: filteredFindings
+  };
+  const chart = buildChartFromFindings(filteredSummary.findings, panel);
+  const details = buildDetailsFromFindings(filteredSummary.findings);
+  const highlights = filteredSummary.findings
+    .filter((finding) => Array.isArray(finding?.entries) && finding.entries.length)
+    .slice(0, 4)
+    .map((finding) => `${finding.title}: ${finding.entries[0].label} (${finding.entries[0].displayValue})`);
+  const narrative = buildNarrativeFromFindings(filteredSummary.findings, filteredSummary.coverage, values, panel);
+
+  return {
+    mode: contract.mode,
+    summary: narrative[0] ?? contract.summary,
+    controls: controls.map((control) => ({
+      id: control.id,
+      label: control.label,
+      description: control.description,
+      type: control.type,
+      parameter: control.parameter,
+      multiple: control.multiple,
+      required: control.required,
+      options: control.options,
+      value: control.value
+    })),
+    params: values,
+    validation: {
+      valid: true
+    },
+    data: {
+      localFindings: filteredSummary,
+      findings: filteredSummary.findings,
+      chart,
+      coverage: filteredSummary.coverage,
+      report: {
+        chart,
+        details,
+        highlights,
+        narrative
+      }
+    }
+  };
+}
+
 export function listDeterministicTools() {
   return [
     {
@@ -412,3 +739,5 @@ export function buildDeterministicToolEnvelope(domain, panel, context) {
     panelSummary: panel ? buildDeterministicPanelSummary(panel, context) : null
   };
 }
+
+export { normalizeInteractionContract };

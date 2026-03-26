@@ -11,55 +11,70 @@
     <div class="backdrop backdrop-two"></div>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">M</div>
-          <div>
-            <p class="eyebrow">Adaptive Analytics</p>
-            <h1 id="app-name">Morphy</h1>
+        <div class="sidebar-scroll">
+          <div class="brand">
+            <div class="brand-mark">M</div>
+            <div>
+              <p class="eyebrow">Adaptive Analytics</p>
+              <h1 id="app-name">Morphy</h1>
+            </div>
           </div>
+
+          <section class="panel chrome">
+            <p class="section-label">Domains</p>
+            <div id="domain-list" class="domain-list"></div>
+          </section>
+
+          <section class="panel chrome">
+            <details class="sidebar-section" open>
+              <summary class="sidebar-toggle">
+                <span>
+                  <p class="section-label">Runtime</p>
+                  <h3>Agent Status</h3>
+                </span>
+              </summary>
+              <div id="agent-status" class="agent-status sidebar-body"></div>
+            </details>
+          </section>
+
+          <section class="panel chrome">
+            <details class="sidebar-section" open>
+              <summary class="sidebar-toggle">
+                <span>
+                  <p class="section-label">Spend</p>
+                  <h3>Model Charges</h3>
+                </span>
+                <button id="reset-spend-button" class="ghost-button compact-button" type="button">Reset</button>
+              </summary>
+              <div id="spend-summary" class="sidebar-body spend-summary"></div>
+            </details>
+          </section>
+
+          <section class="panel chrome">
+            <details id="current-domain-section" class="sidebar-section" open>
+              <summary class="sidebar-toggle">
+                <span>
+                  <p class="section-label">Current Domain</p>
+                  <h3>Prompt And Sources</h3>
+                </span>
+                <button id="delete-domain-button" class="ghost-button compact-button danger-button" type="button">Delete</button>
+              </summary>
+              <div id="domain-context-summary" class="sidebar-body domain-context-summary"></div>
+            </details>
+          </section>
+
+          <section class="panel chrome">
+            <details id="source-preview-section" class="sidebar-section">
+              <summary class="sidebar-toggle">
+                <span>
+                  <p class="section-label">Data Sources</p>
+                  <h3>Source Preview</h3>
+                </span>
+              </summary>
+              <div id="source-preview-list" class="source-preview-list sidebar-body"></div>
+            </details>
+          </section>
         </div>
-
-        <section class="panel chrome">
-          <p class="section-label">Domains</p>
-          <div id="domain-list" class="domain-list"></div>
-        </section>
-
-        <section class="panel chrome">
-          <details class="sidebar-section" open>
-            <summary class="sidebar-toggle">
-              <span>
-                <p class="section-label">Runtime</p>
-                <h3>Agent Status</h3>
-              </span>
-            </summary>
-            <div id="agent-status" class="agent-status sidebar-body"></div>
-          </details>
-        </section>
-
-        <section class="panel chrome">
-          <details class="sidebar-section" open>
-            <summary class="sidebar-toggle">
-              <span>
-                <p class="section-label">Spend</p>
-                <h3>Model Charges</h3>
-              </span>
-              <button id="reset-spend-button" class="ghost-button compact-button" type="button">Reset</button>
-            </summary>
-            <div id="spend-summary" class="sidebar-body spend-summary"></div>
-          </details>
-        </section>
-
-        <section class="panel chrome">
-          <details id="source-preview-section" class="sidebar-section">
-            <summary class="sidebar-toggle">
-              <span>
-                <p class="section-label">Data Sources</p>
-                <h3>Source Preview</h3>
-              </span>
-            </summary>
-            <div id="source-preview-list" class="source-preview-list sidebar-body"></div>
-          </details>
-        </section>
       </aside>
 
       <main class="main">

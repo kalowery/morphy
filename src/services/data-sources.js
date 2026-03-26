@@ -258,25 +258,29 @@ async function previewRelational(source, logger = noopLogger) {
 
 export async function previewSource(source, options = {}) {
   const logger = options.logger ?? noopLogger;
+  const effectiveSource = {
+    ...source,
+    ...(options.overrides ?? {})
+  };
   switch (source.type) {
     case "json-file":
-      return previewJsonFile(source, logger);
+      return previewJsonFile(effectiveSource, logger);
     case "victoria-metrics":
-      return previewVictoriaMetrics(source, logger);
+      return previewVictoriaMetrics(effectiveSource, logger);
     case "relational":
-      return previewRelational(source, logger);
+      return previewRelational(effectiveSource, logger);
     default:
       logger.warn("Unsupported source type", {
-        sourceId: source.id,
-        sourceType: source.type
+        sourceId: effectiveSource.id,
+        sourceType: effectiveSource.type
       }, "datasources");
       return {
-        sourceId: source.id,
-        sourceType: source.type,
-        sourceName: source.name,
+        sourceId: effectiveSource.id,
+        sourceType: effectiveSource.type,
+        sourceName: effectiveSource.name,
         status: "warning",
         detail: {
-          message: `Unsupported source type: ${source.type}`
+          message: `Unsupported source type: ${effectiveSource.type}`
         }
       };
   }
@@ -284,12 +288,20 @@ export async function previewSource(source, options = {}) {
 
 export async function gatherDomainContext(domain, dataSources, options = {}) {
   const logger = options.logger ?? noopLogger;
+  const sourceOverrides = options.sourceOverrides ?? {};
   const applicableSources = dataSources.filter((source) => domain.dataSources.includes(source.id));
   logger.debug("Gathering domain context", {
     domainId: domain.id,
     sourceIds: applicableSources.map((source) => source.id)
   }, "datasources");
-  const previews = await Promise.all(applicableSources.map((source) => previewSource(source, { logger })));
+  const previews = await Promise.all(
+    applicableSources.map((source) =>
+      previewSource(source, {
+        logger,
+        overrides: sourceOverrides[source.id] ?? {}
+      })
+    )
+  );
 
   return {
     domainId: domain.id,

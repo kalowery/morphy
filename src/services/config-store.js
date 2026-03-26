@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { listJsonFiles, readJson, writeJson } from "../lib/json-file.js";
 
@@ -48,6 +49,54 @@ export class ConfigStore {
 
   async saveDomain(domain) {
     return writeJson(path.join(paths.domainsDir, `${domain.id}.json`), domain);
+  }
+
+  async deleteDomain(domainId) {
+    await fs.rm(path.join(paths.domainsDir, `${domainId}.json`), { force: true });
+
+    const [workspacePlans, liveState, sessions, widgets, runs] = await Promise.all([
+      this.getWorkspacePlans(),
+      this.getLiveState(),
+      this.getSessions(),
+      this.getWidgets(),
+      this.listRuns()
+    ]);
+
+    if (workspacePlans[domainId]) {
+      delete workspacePlans[domainId];
+      await this.saveWorkspacePlans(workspacePlans);
+    }
+
+    if (liveState.domainSnapshots?.[domainId]) {
+      delete liveState.domainSnapshots[domainId];
+      liveState.updatedAt = new Date().toISOString();
+      await this.saveLiveState(liveState);
+    }
+
+    if (sessions[domainId]) {
+      delete sessions[domainId];
+      await this.saveSessions(sessions);
+    }
+
+    const widgetsToDelete = widgets.filter((widget) => widget.domainId === domainId);
+    if (widgetsToDelete.length) {
+      const nextWidgets = widgets.filter((widget) => widget.domainId !== domainId);
+      await this.saveWidgets(nextWidgets);
+      await Promise.all(
+        widgetsToDelete.map((widget) =>
+          fs.rm(path.join(paths.widgetBundlesDir, widget.id), { recursive: true, force: true })
+        )
+      );
+    }
+
+    const runsToDelete = runs.filter((run) => run.domainId === domainId);
+    if (runsToDelete.length) {
+      await Promise.all(
+        runsToDelete.map((run) =>
+          fs.rm(path.join(paths.runsDir, `${run.id}.json`), { force: true })
+        )
+      );
+    }
   }
 
   async getLiveState() {

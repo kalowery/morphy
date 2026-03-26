@@ -4,13 +4,17 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigStore } from "./services/config-store.js";
-import { previewSource } from "./services/data-sources.js";
+import { gatherDomainContext, previewSource } from "./services/data-sources.js";
 import { AgentRuntime } from "./services/agent-runtime.js";
 import { WidgetService } from "./services/widget-service.js";
 import { RefreshCoordinator } from "./services/refresh-coordinator.js";
 import { buildServerDiagnostics, createLogger } from "./lib/logger.js";
 import { BillingTracker } from "./lib/billing.js";
-import { buildDomainToolRegistry } from "./services/analysis-tools.js";
+import {
+  buildDomainToolRegistry,
+  buildPanelInteractionState,
+  getInteractionDateRangeOverrides
+} from "./services/analysis-tools.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -165,6 +169,26 @@ export async function createApp() {
     }
   });
 
+  app.delete("/api/domains/:domainId", async (request, response, next) => {
+    try {
+      const domainId = request.params.domainId;
+      const domain = await configStore.getDomain(domainId);
+
+      if (!domain) {
+        response.status(404).json({ error: "Domain not found." });
+        return;
+      }
+
+      await configStore.deleteDomain(domainId);
+      logger.info("Domain deleted via API", {
+        domainId
+      }, "server");
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/analysis/run", async (request, response, next) => {
     try {
       const { domainId, panelId, force = false } = request.body ?? {};
@@ -258,6 +282,136 @@ export async function createApp() {
     }
   });
 
+  app.get("/api/panels/:domainId/:panelId/interaction", async (request, response, next) => {
+    try {
+      const [domain, dataSources] = await Promise.all([
+        configStore.getDomain(request.params.domainId),
+        configStore.getDataSources()
+      ]);
+
+      if (!domain) {
+        response.status(404).json({ error: "Domain not found." });
+        return;
+      }
+
+      const panel = domain.panels.find((entry) => entry.id === request.params.panelId);
+      if (!panel) {
+        response.status(404).json({ error: "Panel not found." });
+        return;
+      }
+
+      const context = await gatherDomainContext(domain, dataSources, { logger });
+      response.json({
+        domainId: domain.id,
+        panelId: panel.id,
+        interaction: buildPanelInteractionState(panel, context)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/panels/:domainId/:panelId/interaction/data", async (request, response, next) => {
+    try {
+      const params = request.body?.params ?? {};
+      const [domain, dataSources] = await Promise.all([
+        configStore.getDomain(request.params.domainId),
+        configStore.getDataSources()
+      ]);
+
+      if (!domain) {
+        response.status(404).json({ error: "Domain not found." });
+        return;
+      }
+
+      const panel = domain.panels.find((entry) => entry.id === request.params.panelId);
+      if (!panel) {
+        response.status(404).json({ error: "Panel not found." });
+        return;
+      }
+
+      const baseContext = await gatherDomainContext(domain, dataSources, { logger });
+      const sourceOverrides = {};
+      for (const sourceId of domain.dataSources) {
+        const override = getInteractionDateRangeOverrides(panel, params, baseContext);
+        if (Object.keys(override).length) {
+          sourceOverrides[sourceId] = override;
+        }
+      }
+
+      const context = Object.keys(sourceOverrides).length
+        ? await gatherDomainContext(domain, dataSources, { logger, sourceOverrides })
+        : baseContext;
+      response.json({
+        domainId: domain.id,
+        panelId: panel.id,
+        params,
+        interaction: buildPanelInteractionState(panel, context, params)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/panels/:domainId/:panelId/interaction/reinterpret", async (request, response, next) => {
+    try {
+      const params = request.body?.params ?? {};
+      const runId = request.body?.runId ?? null;
+      const [domain, dataSources] = await Promise.all([
+        configStore.getDomain(request.params.domainId),
+        configStore.getDataSources()
+      ]);
+
+      if (!domain) {
+        response.status(404).json({ error: "Domain not found." });
+        return;
+      }
+
+      const panel = domain.panels.find((entry) => entry.id === request.params.panelId);
+      if (!panel) {
+        response.status(404).json({ error: "Panel not found." });
+        return;
+      }
+
+      const baseContext = await gatherDomainContext(domain, dataSources, { logger });
+      const sourceOverrides = {};
+      for (const sourceId of domain.dataSources) {
+        const override = getInteractionDateRangeOverrides(panel, params, baseContext);
+        if (Object.keys(override).length) {
+          sourceOverrides[sourceId] = override;
+        }
+      }
+
+      const context = Object.keys(sourceOverrides).length
+        ? await gatherDomainContext(domain, dataSources, { logger, sourceOverrides })
+        : baseContext;
+      const interaction = buildPanelInteractionState(panel, context, params);
+      const reinterpretation = await agentRuntime.reinterpretFilteredPanel({
+        domain,
+        panel,
+        context,
+        interaction,
+        runId
+      });
+
+      interaction.data.report = reinterpretation.report;
+      interaction.data.chart = reinterpretation.report?.chart ?? interaction.data.chart ?? null;
+      interaction.summary = reinterpretation.report?.narrative?.[0] ?? interaction.summary;
+
+      response.json({
+        domainId: domain.id,
+        panelId: panel.id,
+        params: interaction.params,
+        interaction,
+        report: reinterpretation.report,
+        usage: reinterpretation.billingEntry?.usage ?? null,
+        cost: reinterpretation.billingEntry?.cost ?? null
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/widgets/generate", async (request, response, next) => {
     try {
       const { domainId, panelId, runId } = request.body ?? {};
@@ -293,18 +447,33 @@ export async function createApp() {
       await configStore.saveRun(run);
       eventBus.emit("run.update", run);
 
-      const { widget, billingEntry } = await widgetService.generateForRun({ domain, panel, run });
+      const {
+        widget,
+        billingEntries = [],
+        toolMode = null,
+        toolTrace = [],
+        toolDecision = null
+      } = await widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
       run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
       run.widgetStatus = "completed";
-      if (billingEntry) {
+      run.widgetToolMode = toolMode;
+      run.widgetToolTrace = toolTrace;
+      run.widgetToolDecision = toolDecision;
+      if (billingEntries.length) {
+        const widgetEntryIds = billingEntries.map((entry) => entry.id).filter(Boolean);
+        const finalWidgetEntry = billingEntries[billingEntries.length - 1];
+        const widgetTotalUsd = billingEntries.reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
         run.billing = {
           ...(run.billing ?? {}),
-          widgetEntryId: billingEntry.id
+          widgetEntryIds,
+          widgetEntryId: finalWidgetEntry?.id ?? null
         };
-        run.widgetUsage = billingEntry.usage;
-        run.widgetCost = billingEntry.cost;
+        run.widgetUsage = finalWidgetEntry?.usage ?? null;
+        run.widgetCost = {
+          totalUsd: Number(widgetTotalUsd.toFixed(6))
+        };
       }
       run.updatedAt = new Date().toISOString();
       await configStore.saveRun(run);
@@ -373,6 +542,14 @@ export async function createApp() {
         widgetId: request.params.widgetId,
         fileName: request.params.fileName
       }, "widgets");
+      const servedAsset = await widgetService.getServedWidgetAsset(request.params.widgetId, request.params.fileName);
+
+      if (servedAsset != null) {
+        response.setHeader("Access-Control-Allow-Origin", "*");
+        response.type(request.params.fileName.endsWith(".js") ? "application/javascript" : "text/css").send(servedAsset);
+        return;
+      }
+
       const filePath = await widgetService.getWidgetFilePath(request.params.widgetId, request.params.fileName);
 
       if (!filePath) {

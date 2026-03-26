@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import OpenAI from "openai";
-import { gatherDomainContext } from "./data-sources.js";
+import { gatherDomainContext, previewSource } from "./data-sources.js";
 import {
   buildDeterministicDomainSummary,
   buildDeterministicPanelSummary,
@@ -29,6 +29,8 @@ const domainSchema = {
     description: { type: "string" },
     color: { type: "string" },
     icon: { type: "string" },
+    generationPrompt: { type: "string" },
+    generationEvidenceSummary: { type: "string" },
     allowedArchetypes: {
       type: "array",
       items: { type: "string" }
@@ -156,6 +158,53 @@ const domainSchema = {
                 }
               }
             }
+          },
+          interactionMode: {
+            type: "string",
+            enum: ["report", "interactive", "hybrid"]
+          },
+          interactionContract: {
+            type: "object",
+            additionalProperties: false,
+            required: ["controls"],
+            properties: {
+              summary: { type: "string" },
+              controls: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["id", "label", "type", "parameter", "source"],
+                  properties: {
+                    id: { type: "string" },
+                    label: { type: "string" },
+                    description: { type: "string" },
+                    type: {
+                      type: "string",
+                      enum: ["single_select", "multi_select", "search", "date_range"]
+                    },
+                    parameter: { type: "string" },
+                    source: {
+                      type: "string",
+                      enum: ["label_values", "query_window"]
+                    },
+                    queryName: { type: "string" },
+                    field: { type: "string" },
+                    displayFields: {
+                      type: "array",
+                      items: { type: "string" }
+                    },
+                    maxOptions: { type: "integer" },
+                    multiple: { type: "boolean" },
+                    required: { type: "boolean" },
+                    defaultStrategy: {
+                      type: "string",
+                      enum: ["none", "top", "all"]
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -173,6 +222,55 @@ const archetypeSelectionSchema = {
     confidence: {
       type: "string",
       enum: ["low", "medium", "high"]
+    }
+  }
+};
+
+const analysisReportSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["narrative", "highlights", "details", "chart"],
+  properties: {
+    narrative: {
+      type: "array",
+      items: { type: "string" }
+    },
+    highlights: {
+      type: "array",
+      items: { type: "string" }
+    },
+    details: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sectionId", "title", "items"],
+        properties: {
+          sectionId: { type: "string" },
+          title: { type: "string" },
+          items: {
+            type: "array",
+            items: { type: "string" }
+          }
+        }
+      }
+    },
+    chart: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "title", "labels", "values"],
+      properties: {
+        type: { type: "string" },
+        title: { type: "string" },
+        labels: {
+          type: "array",
+          items: { type: "string" }
+        },
+        values: {
+          type: "array",
+          items: { type: "number" }
+        }
+      }
     }
   }
 };
@@ -282,6 +380,31 @@ const archetypeToolRequestSchema = {
   }
 };
 
+const analysisToolRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "rationale", "toolCalls"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["analyze", "call_tools"]
+    },
+    rationale: { type: "string" },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["toolId", "purpose"],
+        properties: {
+          toolId: { type: "string" },
+          purpose: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
 function slugify(value) {
   return value
     .toLowerCase()
@@ -295,6 +418,7 @@ function compactDomain(domain) {
     id: domain.id,
     name: domain.name,
     description: domain.description,
+    generationEvidenceSummary: domain.generationEvidenceSummary ?? null,
     dataSources: domain.dataSources,
     allowedArchetypes: domain.allowedArchetypes ?? [],
     analysisRecipe: domain.analysisRecipe
@@ -350,6 +474,8 @@ function compactPanel(panel) {
     preferredArchetype: panel.preferredArchetype ?? null,
     archetypeGuidance: panel.archetypeGuidance ?? "",
     analysisPrompt: panel.analysisPrompt,
+    interactionMode: panel.interactionMode ?? "report",
+    interactionContract: panel.interactionContract ?? null,
     analysisRecipe: panel.analysisRecipe
       ? {
           focus: panel.analysisRecipe.focus,
@@ -465,6 +591,244 @@ function compactQueryResult(result, sampleCount = 4) {
   };
 }
 
+function compactSourceMetadataForGeneration(source) {
+  if (source.type === "victoria-metrics") {
+    const queryNames = Object.keys(source.queries ?? {});
+    return {
+      id: source.id,
+      name: source.name,
+      type: source.type,
+      description: source.description ?? "",
+      baseUrl: source.baseUrl ?? null,
+      window: {
+        evaluationTime: source.defaultEvaluationTime ?? source.time ?? null,
+        start: source.start ?? null,
+        end: source.end ?? null
+      },
+      previewQueryNames: (source.previewQueryNames ?? []).slice(0, 10),
+      availableQueryNames: queryNames.slice(0, 16),
+      availableQueryCount: queryNames.length
+    };
+  }
+
+  if (source.type === "json-file") {
+    return {
+      id: source.id,
+      name: source.name,
+      type: source.type,
+      description: source.description ?? "",
+      path: source.path ?? null
+    };
+  }
+
+  if (source.type === "relational") {
+    const sampleRows = Array.isArray(source.sampleRows) ? source.sampleRows : [];
+    const sampleColumns = collectTopKeys(sampleRows, 10);
+    return {
+      id: source.id,
+      name: source.name,
+      type: source.type,
+      description: source.description ?? "",
+      sampleColumns,
+      sampleRowCount: sampleRows.length
+    };
+  }
+
+  return {
+    id: source.id,
+    name: source.name,
+    type: source.type,
+    description: source.description ?? ""
+  };
+}
+
+const QUERY_LANGUAGE_TOKENS = new Set([
+  "and",
+  "bool",
+  "by",
+  "group_left",
+  "group_right",
+  "ignoring",
+  "last_over_time",
+  "max_over_time",
+  "min_over_time",
+  "avg_over_time",
+  "sum_over_time",
+  "count_over_time",
+  "increase",
+  "rate",
+  "irate",
+  "delta",
+  "deriv",
+  "predict_linear",
+  "topk",
+  "bottomk",
+  "sort",
+  "sort_desc",
+  "sum",
+  "avg",
+  "max",
+  "min",
+  "count",
+  "stddev",
+  "stdvar",
+  "quantile",
+  "without",
+  "on",
+  "or",
+  "unless",
+  "offset"
+]);
+
+function extractMetricHints(expression, limit = 8) {
+  if (typeof expression !== "string" || !expression.trim()) {
+    return [];
+  }
+
+  const matches = expression.match(/\b[a-zA-Z_:][a-zA-Z0-9_:]*\b/g) ?? [];
+  const unique = [];
+
+  for (const token of matches) {
+    if (QUERY_LANGUAGE_TOKENS.has(token)) {
+      continue;
+    }
+
+    if (!token.includes("_") && !token.includes(":")) {
+      continue;
+    }
+
+    if (!unique.includes(token)) {
+      unique.push(token);
+    }
+
+    if (unique.length >= limit) {
+      break;
+    }
+  }
+
+  return unique;
+}
+
+function collectTopKeys(items = [], limit = 6) {
+  const counts = new Map();
+
+  for (const item of items) {
+    for (const key of Object.keys(item ?? {})) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([key]) => key);
+}
+
+function collectRepresentativeValues(items = [], limit = 5) {
+  const values = [];
+
+  for (const item of items) {
+    for (const [key, value] of Object.entries(item ?? {})) {
+      if (value === undefined || value === null || value === "") {
+        continue;
+      }
+
+      const rendered = String(value);
+      if (!values.some((entry) => entry.key === key && entry.value === rendered)) {
+        values.push({ key, value: rendered });
+      }
+
+      if (values.length >= limit) {
+        return values;
+      }
+    }
+  }
+
+  return values;
+}
+
+function compactVictoriaResultForGeneration(result) {
+  const sample = result.sample ?? [];
+  const metrics = sample.map((entry) => entry.metric ?? {});
+  const labelKeys = collectTopKeys(metrics, 6);
+  const representativeLabels = collectRepresentativeValues(metrics, 6);
+
+  return {
+    queryName: result.queryName,
+    resultType: result.resultType,
+    resultCount: result.resultCount,
+    labelKeys,
+    representativeLabels,
+    sample: sample.slice(0, 3).map((entry) => ({
+      labels: formatMetricLabels(entry.metric ?? {}),
+      value: entry.value
+    }))
+  };
+}
+
+function compactPreviewForGeneration(source, preview) {
+  const base = {
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    description: source.description ?? "",
+    status: preview.status
+  };
+
+  if (preview.status !== "ready") {
+    return {
+      ...base,
+      issue: preview.detail?.message ?? "Preview unavailable"
+    };
+  }
+
+  if (source.type === "victoria-metrics") {
+    return {
+      ...base,
+      window: preview.detail?.queryWindow ?? null,
+      previewQueries: (source.previewQueryNames ?? []).slice(0, 8),
+      queryCatalog: Object.entries(source.queries ?? {})
+        .slice(0, 10)
+        .map(([queryName, queryExpression]) => ({
+          queryName,
+          metricHints: extractMetricHints(queryExpression, 6)
+        })),
+      queryResults: (preview.detail?.queryResults ?? []).slice(0, 8).map((result) => compactVictoriaResultForGeneration(result))
+    };
+  }
+
+  if (source.type === "json-file" || source.type === "relational") {
+    const detail = preview.detail ?? {};
+    const sampleRows = Array.isArray(detail.sample) ? detail.sample : [];
+    const sampleKeys = collectTopKeys(sampleRows, 8);
+    const numericFields = Object.keys(detail.metrics ?? {}).slice(0, 8);
+
+    return {
+      ...base,
+      rowCount: detail.rowCount ?? 0,
+      sampleKeys,
+      numericFields,
+      sampleRows: sampleRows.slice(0, 3)
+    };
+  }
+
+  return {
+    ...base,
+    detail: preview.detail ?? null
+  };
+}
+
+async function gatherSourceDiscoveryEvidence(dataSources, logger) {
+  const previews = await Promise.all(
+    dataSources.map(async (source) => ({
+      source,
+      preview: await previewSource(source, { logger })
+    }))
+  );
+
+  return previews.map(({ source, preview }) => compactPreviewForGeneration(source, preview));
+}
+
 function relevantQueryNamesForPanel(panel) {
   return getRelevantQueryNamesFromRecipe(panel?.analysisRecipe);
 }
@@ -522,6 +886,32 @@ function compactContextForPlanner(context) {
   };
 }
 
+function compactInteractionEvidence(interaction) {
+  const findings = interaction?.data?.findings ?? interaction?.data?.localFindings?.findings ?? [];
+  return {
+    summary: interaction?.summary ?? "",
+    params: interaction?.params ?? {},
+    coverage: interaction?.data?.coverage ?? interaction?.data?.localFindings?.coverage ?? null,
+    report: {
+      narrative: (interaction?.data?.report?.narrative ?? []).slice(0, 4),
+      highlights: (interaction?.data?.report?.highlights ?? []).slice(0, 6),
+      details: (interaction?.data?.report?.details ?? []).slice(0, 4),
+      chart: interaction?.data?.chart ?? interaction?.data?.report?.chart ?? null
+    },
+    findings: findings.slice(0, 6).map((finding) => ({
+      blockId: finding.blockId ?? null,
+      title: finding.title ?? null,
+      operation: finding.operation ?? null,
+      displayValue: finding.displayValue ?? null,
+      value: finding.value ?? null,
+      entries: (finding.entries ?? []).slice(0, 5).map((entry) => ({
+        label: entry.label,
+        displayValue: entry.displayValue
+      }))
+    }))
+  };
+}
+
 function extractJson(text) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : text;
@@ -552,6 +942,9 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
       .join("")
       .slice(0, 2)
       .toUpperCase(),
+    generationEvidenceSummary: sourceIds.length
+      ? `Fallback domain based on configured sources: ${sourceIds.join(", ")}. Live datasource semantic grounding was unavailable because the model-backed generation path was not used.`
+      : "Fallback domain generated without datasource grounding because no sources were available.",
     allowedArchetypes: Object.keys(getArchetypeRegistry(appConfig).library),
     dataSources: sourceIds,
     analysisRecipe: {
@@ -1402,9 +1795,12 @@ export class AgentRuntime {
   async generateDomain(prompt) {
     const dataSources = await this.configStore.getDataSources();
     const appConfig = await this.configStore.getAppConfig();
+    const compactSourceMetadata = dataSources.map((source) => compactSourceMetadataForGeneration(source));
+    const sourceDiscoveryEvidence = await gatherSourceDiscoveryEvidence(dataSources, this.logger);
     this.logger.info("Generating domain", {
       promptLength: prompt.length,
       dataSourceIds: dataSources.map((source) => source.id),
+      readySourceCount: sourceDiscoveryEvidence.filter((source) => source.status === "ready").length,
       provider: this.openai ? "openai" : "fallback"
     }, "analysis");
 
@@ -1438,7 +1834,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Available data sources:\n${JSON.stringify(dataSources, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.`
+              text: `Available data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nLive datasource discovery evidence:\n${JSON.stringify(sourceDiscoveryEvidence, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.\n\nUse the live datasource discovery evidence as the primary grounding for semantic understanding of the domain. Infer entities, relationships, and relevant workflows from that evidence when possible. Do not invent metric families, labels, or operational semantics that are not supported by the datasource metadata or live evidence. Include generationEvidenceSummary as a concise explanation of which datasource contents most strongly shaped the resulting domain.`
             }
           ]
         }
@@ -1460,6 +1856,7 @@ export class AgentRuntime {
     });
 
     const domain = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
+    domain.generationPrompt = prompt;
     await this.configStore.saveDomain(domain);
     this.logger.info("Generated domain with OpenAI", {
       domainId: domain.id,
@@ -1550,6 +1947,131 @@ export class AgentRuntime {
       : "";
 
     return [panel.analysisPrompt, focusHint, rationaleHint, actionsHint].filter(Boolean).join("\n\n");
+  }
+
+  async reinterpretFilteredPanel({ domain, panel, context, interaction, runId = null }) {
+    const appConfig = await this.configStore.getAppConfig();
+    const run = runId ? await this.configStore.getRun(runId) : null;
+    const selectedArchetype =
+      run?.selectedArchetype ??
+      getPreferredArchetype(appConfig, domain, panel) ??
+      panel?.preferredArchetype ??
+      null;
+    const selectedArchetypeDefinition = selectedArchetype
+      ? getArchetypeDefinition(appConfig, selectedArchetype)
+      : null;
+    const analysisContract = buildArchetypeAnalysisContract(appConfig, selectedArchetype);
+    const compactDomainSummary = compactDomain(domain);
+    const compactPanelSummary = compactPanel(panel);
+    const compactContext = compactContextForPanel(panel, context);
+    const compactInteraction = compactInteractionEvidence(interaction);
+    const fallbackReport = normalizeReport(
+      interaction?.data?.report ?? {},
+      panel,
+      analysisContract,
+      buildArchetypeDetails({
+        appConfig,
+        panel,
+        run: {
+          ...run,
+          selectedArchetype,
+          archetypeTitle: selectedArchetypeDefinition?.title ?? selectedArchetype
+        },
+        report: interaction?.data?.report ?? {},
+        context
+      })
+    );
+
+    if (!this.openai) {
+      return {
+        report: fallbackReport,
+        billingEntry: null
+      };
+    }
+
+    this.logger.info("Reinterpreting filtered interaction view", {
+      domainId: domain.id,
+      panelId: panel.id,
+      runId,
+      selectedArchetype
+    }, "analysis");
+
+    const response = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "You reinterpret a filtered analytical view. Keep the panel structure stable. Use the supplied filtered evidence as the primary source of truth. Return strict JSON only with keys narrative, highlights, details, and chart."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Domain summary:\n${JSON.stringify(compactDomainSummary, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanelSummary, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+                id: selectedArchetype,
+                title: selectedArchetypeDefinition?.title ?? selectedArchetype,
+                contract: analysisContract
+              }, null, 2)}\n\nFiltered interaction evidence:\n${JSON.stringify(compactInteraction, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\nReinterpret this filtered slice only. Do not change the scaffold, controls, or archetype. Refresh the narrative, highlights, details, and chart so they match the selected filters.`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "interactive_reinterpretation",
+          schema: analysisReportSchema,
+          strict: true
+        }
+      }
+    });
+
+    const billingEntry = await this.billingTracker?.recordResponseUsage({
+      response,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "interactive_reinterpretation",
+      provider: "openai-responses",
+      domainId: domain.id,
+      panelId: panel.id,
+      panelTitle: panel.title,
+      archetypeId: selectedArchetype,
+      archetypeTitle: selectedArchetypeDefinition?.title ?? selectedArchetype ?? null,
+      runId
+    });
+
+    const parsed = response.output_text
+      ? JSON.parse(response.output_text)
+      : extractJson(JSON.stringify(response.output));
+
+    return {
+      report: normalizeReport(
+        parsed,
+        panel,
+        analysisContract,
+        buildArchetypeDetails({
+          appConfig,
+          panel,
+          run: {
+            ...run,
+            selectedArchetype,
+            archetypeTitle: selectedArchetypeDefinition?.title ?? selectedArchetype
+          },
+          report: parsed,
+          context
+        })
+      ),
+      billingEntry
+    };
   }
 
   async runArchetypeToolLoop({
@@ -1886,6 +2408,299 @@ export class AgentRuntime {
     };
   }
 
+  async runAnalysisToolLoop({
+    runId,
+    appConfig,
+    domain,
+    panel,
+    workspacePlan,
+    analysisContract,
+    analysisDomain,
+    analysisPanel,
+    analysisWorkspacePlan,
+    analysisDomainTools,
+    analysisPanelTools,
+    analysisContext,
+    analysisToolRegistry,
+    selectedArchetype
+  }) {
+    const toolTrace = [];
+    const billingEntries = [];
+    const availableToolIds = new Set(compactToolRegistryIds(analysisToolRegistry));
+    const requireToolCall = Boolean(
+      appConfig.agent?.localTools?.enabled &&
+        appConfig.agent?.localTools?.primaryForAnalysis &&
+        Array.isArray(analysisToolRegistry?.tools) &&
+        analysisToolRegistry.tools.length
+    );
+    const toolRequirementText = requireToolCall
+      ? "You must request 1 to 3 derived tool calls from the provided registry before final analysis. Do not return mode=analyze on this step."
+      : "If the existing evidence is sufficient, you may return mode=analyze with no tool calls.";
+    const initialResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `You are preparing an analytical report. ${toolRequirementText} Return strict JSON only.`
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Decide which derived tools, if any, should be invoked before final analysis.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify(selectedArchetype, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen the analysis report." : "If you already have enough evidence, return mode=analyze with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "analysis_tool_request",
+          schema: analysisToolRequestSchema,
+          strict: true
+        }
+      }
+    });
+    const initialBillingEntry = await this.billingTracker?.recordResponseUsage({
+      response: initialResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "panel_analysis",
+      provider: "openai-responses",
+      domainId: domain.id,
+      panelId: panel.id,
+      panelTitle: panel.title,
+      archetypeId: selectedArchetype.id,
+      archetypeTitle: selectedArchetype.title,
+      runId
+    });
+    if (initialBillingEntry) {
+      billingEntries.push(initialBillingEntry);
+    }
+
+    const decision = initialResponse.output_text
+      ? JSON.parse(initialResponse.output_text)
+      : extractJson(JSON.stringify(initialResponse.output));
+    this.logger.info("Analysis tool decision received", {
+      runId,
+      panelId: panel.id,
+      mode: decision.mode,
+      toolCallCount: decision.toolCalls?.length ?? 0,
+      required: requireToolCall
+    }, "analysis");
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+      const repairResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You must request derived tools before final analysis. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous response did not request tools, but this analysis mode requires tool invocation. Return mode=call_tools with 1 to 3 tool calls from this registry.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify(selectedArchetype, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "analysis_tool_request_repair",
+            schema: analysisToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      const repairBillingEntry = await this.billingTracker?.recordResponseUsage({
+        response: repairResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "panel_analysis",
+        provider: "openai-responses",
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title,
+        archetypeId: selectedArchetype.id,
+        archetypeTitle: selectedArchetype.title,
+        runId
+      });
+      if (repairBillingEntry) {
+        billingEntries.push(repairBillingEntry);
+      }
+      const repairedDecision = repairResponse.output_text
+        ? JSON.parse(repairResponse.output_text)
+        : extractJson(JSON.stringify(repairResponse.output));
+      if (repairedDecision.mode === "call_tools" && (repairedDecision.toolCalls ?? []).length) {
+        decision.mode = repairedDecision.mode;
+        decision.rationale = repairedDecision.rationale;
+        decision.toolCalls = repairedDecision.toolCalls;
+        this.logger.info("Analysis tool decision repaired", {
+          runId,
+          panelId: panel.id,
+          toolCallCount: decision.toolCalls?.length ?? 0
+        }, "analysis");
+      }
+    }
+
+    let requestedToolCalls = [...(decision.toolCalls ?? [])];
+    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
+      const invalidToolIds = requestedToolCalls
+        .map((toolCall) => toolCall?.toolId)
+        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+      this.logger.info("Analysis requested invalid tool ids", {
+        runId,
+        panelId: panel.id,
+        invalidToolIds
+      }, "analysis");
+      const repairInvalidResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You must request only tool ids that appear in the provided registry. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous tool request included invalid tool ids: ${invalidToolIds.join(", ")}.\n\nReturn mode=call_tools with 1 to 3 tool calls using only these valid tools:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "analysis_tool_request_registry_repair",
+            schema: analysisToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      const repairInvalidBillingEntry = await this.billingTracker?.recordResponseUsage({
+        response: repairInvalidResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "panel_analysis",
+        provider: "openai-responses",
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title,
+        archetypeId: selectedArchetype.id,
+        archetypeTitle: selectedArchetype.title,
+        runId
+      });
+      if (repairInvalidBillingEntry) {
+        billingEntries.push(repairInvalidBillingEntry);
+      }
+      const repairedInvalidDecision = repairInvalidResponse.output_text
+        ? JSON.parse(repairInvalidResponse.output_text)
+        : extractJson(JSON.stringify(repairInvalidResponse.output));
+      if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
+        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        this.logger.info("Analysis invalid tool request repaired", {
+          runId,
+          panelId: panel.id,
+          toolCallCount: requestedToolCalls.length
+        }, "analysis");
+      }
+    }
+
+    if (decision.mode !== "call_tools" || !requestedToolCalls.length) {
+      return {
+        toolMode: "model-no-tools",
+        toolTrace,
+        toolDecision: decision,
+        billingEntries,
+        derivedToolOutputs: []
+      };
+    }
+
+    const uniqueToolCalls = [];
+    const seen = new Set();
+    for (const toolCall of requestedToolCalls.slice(0, 3)) {
+      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+        continue;
+      }
+      seen.add(toolCall.toolId);
+      uniqueToolCalls.push(toolCall);
+    }
+
+    if (!uniqueToolCalls.length) {
+      return {
+        toolMode: "model-no-tools",
+        toolTrace,
+        toolDecision: {
+          ...decision,
+          mode: "analyze",
+          rationale: `${decision.rationale} No valid derived tool ids were returned after validation.`
+        },
+        billingEntries,
+        derivedToolOutputs: []
+      };
+    }
+
+    const derivedToolOutputs = uniqueToolCalls.map((toolCall) => {
+      const execution = executeDerivedTool(analysisToolRegistry, analysisContext, toolCall.toolId);
+      const traceEntry = {
+        toolId: execution.tool.id,
+        title: execution.tool.title,
+        scopeType: execution.tool.scopeType,
+        scopeTitle: execution.tool.scopeTitle,
+        operation: execution.tool.operation,
+        purpose: toolCall.purpose,
+        result: compactToolResultForModel(execution),
+        recordedAt: new Date().toISOString()
+      };
+      toolTrace.push(traceEntry);
+      return compactToolResultForModel(execution);
+    });
+    this.logger.info("Analysis tools executed", {
+      runId,
+      panelId: panel.id,
+      toolIds: toolTrace.map((entry) => entry.toolId),
+      toolCount: toolTrace.length
+    }, "analysis");
+
+    return {
+      toolMode: "model-directed",
+      toolTrace,
+      toolDecision: decision,
+      billingEntries,
+      derivedToolOutputs
+    };
+  }
+
   async selectArchetype({ appConfig, domain, panel, context }) {
     const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
     const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
@@ -2081,9 +2896,58 @@ export class AgentRuntime {
       }, "analysis");
 
       run = await this.persistRunUpdate(run, {
+        progressPhase: "analysis_tools",
+        progressLabel: "Selecting Analysis Tools",
+        progressMessage: "Letting the model choose which derived local tools to invoke for this report."
+      });
+
+      const analysisLoop = await this.runAnalysisToolLoop({
+        runId: run.id,
+        appConfig,
+        domain,
+        panel,
+        workspacePlan,
+        analysisContract,
+        analysisDomain,
+        analysisPanel,
+        analysisWorkspacePlan,
+        analysisDomainTools,
+        analysisPanelTools,
+        analysisContext,
+        analysisToolRegistry,
+        selectedArchetype: {
+          id: run.selectedArchetype,
+          title: run.archetypeTitle,
+          reason: run.archetypeReason,
+          confidence: run.archetypeConfidence
+        }
+      });
+      const analysisEntryIds = (analysisLoop.billingEntries ?? []).map((entry) => entry.id).filter(Boolean);
+      const analysisLoopCost = (analysisLoop.billingEntries ?? []).reduce(
+        (sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0),
+        0
+      );
+      run = await this.persistRunUpdate(run, {
+        analysisToolMode: analysisLoop.toolMode ?? null,
+        analysisToolTrace: analysisLoop.toolTrace ?? [],
+        analysisToolDecision: analysisLoop.toolDecision ?? null,
+        billing: analysisEntryIds.length
+          ? {
+              ...(run.billing ?? {}),
+              analysisEntryIds
+            }
+          : run.billing,
+        analysisCost: analysisEntryIds.length
+          ? {
+              totalUsd: analysisLoopCost
+            }
+          : run.analysisCost ?? null,
         progressPhase: "analysis_request",
         progressLabel: "Submitting Analysis",
-        progressMessage: "Sending the prepared task to the model."
+        progressMessage:
+          analysisLoop.toolTrace?.length
+            ? "Derived local tool outputs are ready. Sending the analytical synthesis task to the model."
+            : "Sending the prepared task to the model."
       });
 
       const previousResponseId = appConfig.agent?.reuseResponseHistory ? sessions[domain.id]?.previousResponseId : undefined;
@@ -2111,13 +2975,16 @@ export class AgentRuntime {
             content: [
               {
                 type: "input_text",
-                text: `Stable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nPanel-specific exposed tool registry:\n${JSON.stringify(analysisToolRegistry, null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+                text: `Stable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
                   id: run.selectedArchetype,
                   title: run.archetypeTitle,
                   reason: run.archetypeReason,
                   confidence: run.archetypeConfidence,
                   allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
-                }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
+                }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nDerived tool decision:\n${JSON.stringify({
+                  mode: analysisLoop.toolMode,
+                  decision: analysisLoop.toolDecision ?? null
+                }, null, 2)}\n\nDerived tool outputs:\n${JSON.stringify(analysisLoop.derivedToolOutputs ?? [], null, 2)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
               }
             ]
           }
@@ -2256,7 +3123,7 @@ export class AgentRuntime {
       progressPhase: "context",
       progressLabel: "Preparing Context",
       progressMessage: "Collecting source previews and deterministic local findings.",
-      widgetStatus: "idle",
+      widgetStatus: "pending",
       billing: {},
       selectedArchetype: null,
       archetypeReason: null,
@@ -2264,6 +3131,12 @@ export class AgentRuntime {
       archetypeToolMode: null,
       archetypeToolTrace: [],
       archetypeToolDecision: null,
+      analysisToolMode: null,
+      analysisToolTrace: [],
+      analysisToolDecision: null,
+      widgetToolMode: null,
+      widgetToolTrace: [],
+      widgetToolDecision: null,
       archetypeTitle: null,
       remoteResponseId: null,
       widgetId: null,
@@ -2415,12 +3288,20 @@ export class AgentRuntime {
         runId: run.id
       });
       if (entry) {
+        const analysisEntryIds = [
+          ...((run.billing?.analysisEntryIds ?? []).filter(Boolean)),
+          entry.id
+        ];
+        const priorAnalysisUsd = Number(run.analysisCost?.totalUsd ?? 0);
         run.billing = {
           ...(run.billing ?? {}),
+          analysisEntryIds,
           analysisEntryId: entry.id
         };
         run.analysisUsage = entry.usage;
-        run.analysisCost = entry.cost;
+        run.analysisCost = {
+          totalUsd: Number((priorAnalysisUsd + Number(entry.cost?.totalUsd ?? 0)).toFixed(6))
+        };
       }
     }
     if (missingSections.length) {
@@ -2474,22 +3355,37 @@ export class AgentRuntime {
         domainId: domain.id,
         panelId: panel.id
       }, "widgets");
-      const { widget, billingEntry } = await this.widgetService.generateForRun({ domain, panel, run });
+      const {
+        widget,
+        billingEntries = [],
+        toolMode = null,
+        toolTrace = [],
+        toolDecision = null
+      } = await this.widgetService.generateForRun({ domain, panel, run });
       run.widgetId = widget.id;
       run.widgetUrl = `/generated/widgets/${widget.id}`;
       run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
       run.widgetStatus = "completed";
       run.widgetError = null;
+      run.widgetToolMode = toolMode;
+      run.widgetToolTrace = toolTrace;
+      run.widgetToolDecision = toolDecision;
       run.progressPhase = "complete";
       run.progressLabel = "Complete";
       run.progressMessage = "Analysis and widget generation are both complete.";
-      if (billingEntry) {
+      if (billingEntries.length) {
+        const widgetEntryIds = billingEntries.map((entry) => entry.id).filter(Boolean);
+        const widgetTotalUsd = billingEntries.reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
+        const finalWidgetEntry = billingEntries[billingEntries.length - 1];
         run.billing = {
           ...(run.billing ?? {}),
-          widgetEntryId: billingEntry.id
+          widgetEntryIds,
+          widgetEntryId: finalWidgetEntry?.id ?? null
         };
-        run.widgetUsage = billingEntry.usage;
-        run.widgetCost = billingEntry.cost;
+        run.widgetUsage = finalWidgetEntry?.usage ?? null;
+        run.widgetCost = {
+          totalUsd: Number(widgetTotalUsd.toFixed(6))
+        };
       }
       this.logger.info("Widget attached to run", {
         runId: run.id,
