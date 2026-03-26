@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { paths } from "./config-store.js";
-import { buildDeterministicPanelSummary } from "./analysis-tools.js";
+import { buildDeterministicPanelSummary, buildPanelToolRegistry, listDeterministicTools } from "./analysis-tools.js";
 import { buildArchetypeWidgetContract, getArchetypeDefinition } from "../lib/archetypes.js";
 
 const artifactSchema = {
@@ -66,6 +66,7 @@ function normalizeContextForWidget(context) {
 function buildWidgetPayload(domain, panel, run, widget = null) {
   const normalizedContext = normalizeContextForWidget(run.context);
   const queryWindow = firstQueryWindow(normalizedContext);
+  const localSummary = run.localFindings ?? buildDeterministicPanelSummary(panel, run.context);
   return {
     runId: run.id,
     domain: {
@@ -85,8 +86,19 @@ function buildWidgetPayload(domain, panel, run, widget = null) {
       reason: run.archetypeReason ?? null,
       confidence: run.archetypeConfidence ?? null
     },
-    report: run.report,
-    context: normalizedContext,
+    report: {
+      ...(run.report ?? {}),
+      findings: run.report?.findings ?? localSummary?.findings ?? [],
+      localFindings: run.report?.localFindings ?? localSummary
+    },
+    context: {
+      ...normalizedContext,
+      coverage: localSummary?.coverage ?? null,
+      recipe: localSummary?.recipe ?? null,
+      findings: localSummary?.findings ?? []
+    },
+    localFindings: localSummary,
+    findings: localSummary?.findings ?? [],
     timestamps: {
       runCreatedAt: run.createdAt ?? null,
       runUpdatedAt: run.updatedAt ?? null,
@@ -1044,6 +1056,7 @@ export class WidgetService {
     const widgetContract = buildArchetypeWidgetContract(appConfig, run.selectedArchetype);
     const panelToolSummary = compactToolSummaryForWidget(buildDeterministicPanelSummary(panel, run.context));
     const compactRun = compactWidgetRun(run);
+    const panelToolRegistry = buildPanelToolRegistry(domain, panel);
     const response = await this.openai.responses.create({
       model: appConfig.codegen?.model ?? "gpt-5.4",
       reasoning: {
@@ -1065,7 +1078,7 @@ export class WidgetService {
           content: [
             {
               type: "input_text",
-              text: `Create a polished browser visualization widget for this analytical panel.\n\nUse the deterministic local evidence as the primary rendering guide. The embedded payload at runtime will contain the full report, context, and theme, so do not assume this prompt is the only available data source.\n\nPanel identity:\n${JSON.stringify({
+              text: `Create a polished browser visualization widget for this analytical panel.\n\nUse the deterministic local evidence as the primary rendering guide. The embedded payload at runtime will contain the full report, context, and theme, so do not assume this prompt is the only available data source.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nPanel-specific exposed tool registry:\n${JSON.stringify(panelToolRegistry, null, 2)}\n\nPanel identity:\n${JSON.stringify({
                 id: panel.id,
                 title: panel.title,
                 summary: panel.summary,

@@ -370,6 +370,46 @@ export class BillingTracker {
     return summary;
   }
 
+  async attachEntriesToRun(entryIds = [], runId) {
+    if (!runId || !Array.isArray(entryIds) || !entryIds.length) {
+      return null;
+    }
+
+    const [ledger, appConfig] = await Promise.all([
+      this.getLedger(),
+      this.configStore.getAppConfig()
+    ]);
+    let updated = false;
+    const targetIds = new Set(entryIds.filter(Boolean));
+    const entries = (ledger.entries ?? []).map((entry) => {
+      if (!targetIds.has(entry.id) || entry.runId === runId) {
+        return entry;
+      }
+      updated = true;
+      return {
+        ...entry,
+        runId
+      };
+    });
+
+    if (!updated) {
+      return null;
+    }
+
+    const nextLedger = {
+      updatedAt: new Date().toISOString(),
+      entries
+    };
+    await this.configStore.saveBillingLedger(nextLedger);
+    const summary = summarizeLedger(entries, appConfig);
+    this.eventBus?.emit("spend.update", summary);
+    this.logger.info("Attached billing entries to run", {
+      runId,
+      entryCount: entryIds.length
+    }, "billing");
+    return summary;
+  }
+
   async recordResponseUsage({
     response,
     model,

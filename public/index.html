@@ -97,6 +97,7 @@
                 <div class="section-body">
                   <p id="workspace-note" class="workspace-note hint"></p>
                   <div id="workspace-actions" class="workspace-actions"></div>
+                  <div id="workspace-tool-trace" class="workspace-tool-trace"></div>
                 </div>
               </details>
               <div class="workspace-focus">
@@ -142,10 +143,22 @@
               <h3>Prompt to Config</h3>
             </div>
           </div>
+          <p class="hint studio-note">Studio prompts generate `analysisRecipe` config. Morphy derives the model-facing tool registry from those recipes rather than storing a separate tool config.</p>
           <form id="domain-form" class="stack">
             <textarea id="domain-prompt" rows="10" placeholder="Describe the domain, the user personas, the data sources, and the types of analyses the agent should emphasize."></textarea>
             <button class="primary-button" type="submit">Create Domain</button>
           </form>
+        </section>
+
+        <section class="panel chrome">
+          <div class="section-header">
+            <div>
+              <p class="section-label">Derived Tools</p>
+              <h3>Recipe Projection</h3>
+            </div>
+          </div>
+          <p class="hint studio-note">The current domain’s `analysisRecipe` blocks are projected into this tool registry, which is what the model sees for planning, analysis, and widget generation.</p>
+          <div id="tool-registry-summary" class="tool-registry-summary"></div>
         </section>
 
         <section class="panel chrome">

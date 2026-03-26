@@ -83,6 +83,7 @@ The next architectural constraint is equally important: Morphy should not drift 
 
 - a stable execution substrate in code
 - domain- and panel-level `analysisRecipe` specifications generated or authored in config
+- a domain-specific exposed tool registry derived from those recipes
 
 That means the runtime owns generic deterministic primitives, while the active domain configuration decides how those primitives are composed for the current form of the system.
 
@@ -234,6 +235,18 @@ These outputs are intentionally compact and deterministic so that the model can 
 
 This is the main mechanism that keeps Morphy metamorphic while still reducing token spend: the code owns the stable execution substrate, while prompt-generated or authored config owns the domain-specific local analytical behavior.
 
+Morphy now distinguishes between:
+
+- **stable primitives**:
+  - `source_preview_coverage`
+  - `scalar_query_value`
+  - `ranked_query_entries`
+  - `recipe_execution`
+- **exposed tool registry**:
+  - domain- and panel-specific analytical tools derived from the active `analysisRecipe` blocks
+
+The model-facing registry is therefore specific to the current prompted configuration, even though the underlying execution substrate remains stable.
+
 ## Runtime State Model
 
 Morphy persists runtime state under `data/state`.
@@ -306,16 +319,17 @@ The current analytical flow is:
 1. Refresh coordinator chooses a domain to refresh.
 2. Datasource adapters refresh the domain’s source preview if stale.
 3. Deterministic local tools summarize the refreshed preview state.
-4. The fallback planner or model-driven planner ranks panels from recipe-derived local evidence.
-5. Workspace planning is rerun if stale.
-6. The coordinator selects a bounded set of panels for the current sweep.
-7. For each selected panel, Morphy either reuses a fresh run or starts a new analysis run.
-8. The analysis run selects an archetype from the allowed set.
-9. The analysis call returns a report using deterministic tool outputs as primary evidence.
-10. The run is marked complete for analysis.
-11. Widget generation starts asynchronously.
-12. The widget artifact is attached to the run when ready.
-13. SSE events notify connected browsers as state changes.
+4. Morphy derives a domain- and panel-specific exposed tool registry from the active recipes.
+5. The fallback planner or model-driven planner ranks panels from recipe-derived local evidence.
+6. Workspace planning is rerun if stale.
+7. The coordinator selects a bounded set of panels for the current sweep.
+8. For each selected panel, Morphy either reuses a fresh run or starts a new analysis run.
+9. The analysis run selects an archetype from the allowed set.
+10. The analysis call returns a report using deterministic tool outputs as primary evidence.
+11. The run is marked complete for analysis.
+12. Widget generation starts asynchronously.
+13. The widget artifact is attached to the run when ready.
+14. SSE events notify connected browsers as state changes.
 
 This split is deliberate. Analysis and widget generation are separate phases.
 
@@ -416,6 +430,8 @@ The selected archetype influences:
 This is how Morphy turns contextual information into bounded presentation change.
 
 In the current implementation, even heuristic archetype fallback is no longer hardcoded to specific panel ids. It scores the allowed archetypes from recipe metadata, evidence shape, and chart bias, then chooses the highest-scoring allowed archetype.
+
+The prompts used for planning, archetype selection, analysis, and widget generation now include the config-specific exposed tool registry as part of the model-facing context. This is the current bridge between prompt-defined domain shape and the stable local execution substrate.
 
 ## Archetype-Aware Analysis
 

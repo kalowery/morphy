@@ -79,6 +79,8 @@
     "sourcePreviewTtlMs": 60000,
     "workspacePlanTtlMs": 300000,
     "analysisTtlMs": 300000,
+    "widgetGenerationTimeoutMs": 300000,
+    "widgetGenerationMaxRetries": 2,
     "panelsPerSweep": 3
   },
   "diagnostics": {

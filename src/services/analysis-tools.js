@@ -277,6 +277,100 @@ export function listDeterministicTools() {
   ];
 }
 
+function recipeToolsForScope(scopeType, scopeId, scopeTitle, recipe) {
+  const normalized = normalizeRecipe(recipe, scopeTitle);
+  return normalized.blocks.map((block) => {
+    const queryNames = [...new Set([...(block.queryNames ?? []), ...(block.queryName ? [block.queryName] : [])])];
+    return {
+      id: `${scopeType}:${scopeId}:${block.id}`,
+      scopeType,
+      scopeId,
+      scopeTitle,
+      title: block.title,
+      description: block.description || `Run the ${block.title} ${block.operation} block for ${scopeTitle}.`,
+      operation: block.operation,
+      backedByPrimitives: block.operation === "scalar" ? ["scalar_query_value"] : ["ranked_query_entries"],
+      queryNames,
+      valueField: block.valueField,
+      labelFields: block.labelFields,
+      valueTransform: block.valueTransform,
+      unit: block.unit,
+      limit: block.limit,
+      focus: normalized.focus
+    };
+  });
+}
+
+function executeToolDescriptor(tool, context) {
+  const block = {
+    id: tool.id,
+    title: tool.title,
+    operation: tool.operation,
+    description: tool.description ?? "",
+    queryName: tool.queryNames?.length === 1 ? tool.queryNames[0] : tool.queryName ?? null,
+    queryNames: tool.queryNames ?? [],
+    labelFields: tool.labelFields ?? [],
+    valueField: tool.valueField ?? "value",
+    valueTransform: tool.valueTransform ?? "identity",
+    unit: tool.unit ?? "",
+    decimals: Number.isInteger(tool.decimals) ? tool.decimals : null,
+    limit: Number.isInteger(tool.limit) ? tool.limit : 5,
+    sort: tool.sort === "asc" ? "asc" : "desc"
+  };
+
+  return block.operation === "scalar" ? scalarBlockOutput(block, context) : topEntriesBlockOutput(block, context);
+}
+
+export function buildDomainToolRegistry(domain) {
+  const domainRecipe = domain?.analysisRecipe ? normalizeRecipe(domain.analysisRecipe, domain?.name ?? "domain") : null;
+  const tools = [
+    ...recipeToolsForScope("domain", domain?.id ?? "domain", domain?.name ?? "Domain", domainRecipe),
+    ...((domain?.panels ?? []).flatMap((panel) =>
+      recipeToolsForScope("panel", panel.id, panel.title, panel.analysisRecipe)
+    ))
+  ];
+
+  return {
+    domainId: domain?.id ?? null,
+    domainName: domain?.name ?? null,
+    toolCount: tools.length,
+    tools
+  };
+}
+
+export function buildPanelToolRegistry(domain, panel) {
+  const domainRegistry = buildDomainToolRegistry(domain);
+  return {
+    domainId: domain?.id ?? null,
+    panelId: panel?.id ?? null,
+    panelTitle: panel?.title ?? null,
+    tools: domainRegistry.tools.filter((tool) => tool.scopeType === "domain" || tool.scopeId === panel?.id)
+  };
+}
+
+export function executeDerivedTool(toolRegistry, context, toolId) {
+  const tool = (toolRegistry?.tools ?? []).find((entry) => entry.id === toolId);
+
+  if (!tool) {
+    throw new Error(`Unknown derived tool: ${toolId}`);
+  }
+
+  return {
+    tool: {
+      id: tool.id,
+      scopeType: tool.scopeType,
+      scopeId: tool.scopeId,
+      scopeTitle: tool.scopeTitle,
+      title: tool.title,
+      description: tool.description,
+      operation: tool.operation,
+      queryNames: tool.queryNames ?? [],
+      focus: tool.focus ?? ""
+    },
+    result: executeToolDescriptor(tool, context)
+  };
+}
+
 export function getRelevantQueryNamesFromRecipe(recipe) {
   const normalized = normalizeRecipe(recipe);
   const names = normalized.blocks.flatMap((block) => [
@@ -312,7 +406,8 @@ export function buildDeterministicPanelSummary(panel, context) {
 
 export function buildDeterministicToolEnvelope(domain, panel, context) {
   return {
-    tools: listDeterministicTools(),
+    primitives: listDeterministicTools(),
+    toolRegistry: buildPanelToolRegistry(domain, panel),
     domainSummary: buildDeterministicDomainSummary(domain, context),
     panelSummary: panel ? buildDeterministicPanelSummary(panel, context) : null
   };

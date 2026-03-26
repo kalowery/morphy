@@ -4,6 +4,9 @@ import { gatherDomainContext } from "./data-sources.js";
 import {
   buildDeterministicDomainSummary,
   buildDeterministicPanelSummary,
+  buildDomainToolRegistry,
+  buildPanelToolRegistry,
+  executeDerivedTool,
   getRelevantQueryNamesFromRecipe,
   listDeterministicTools
 } from "./analysis-tools.js";
@@ -229,6 +232,56 @@ const workspacePlanSchema = {
   }
 };
 
+const plannerToolRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "rationale", "toolCalls"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["plan", "call_tools"]
+    },
+    rationale: { type: "string" },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["toolId", "purpose"],
+        properties: {
+          toolId: { type: "string" },
+          purpose: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
+const archetypeToolRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "rationale", "toolCalls"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["select", "call_tools"]
+    },
+    rationale: { type: "string" },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["toolId", "purpose"],
+        properties: {
+          toolId: { type: "string" },
+          purpose: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
 function slugify(value) {
   return value
     .toLowerCase()
@@ -348,6 +401,48 @@ function compactRecentRuns(runs = []) {
         }
       : null
   }));
+}
+
+function compactToolRegistry(toolRegistry, limit = 12) {
+  return {
+    domainId: toolRegistry?.domainId ?? null,
+    domainName: toolRegistry?.domainName ?? null,
+    toolCount: toolRegistry?.toolCount ?? 0,
+    tools: (toolRegistry?.tools ?? []).slice(0, limit).map((tool) => ({
+      id: tool.id,
+      scopeType: tool.scopeType,
+      scopeTitle: tool.scopeTitle,
+      title: tool.title,
+      description: tool.description,
+      operation: tool.operation,
+      queryNames: tool.queryNames ?? [],
+      valueField: tool.valueField ?? null,
+      limit: tool.limit ?? null,
+      focus: tool.focus ?? ""
+    }))
+  };
+}
+
+function compactToolRegistryIds(toolRegistry) {
+  return (toolRegistry?.tools ?? []).map((tool) => tool.id);
+}
+
+function compactToolResultForModel(execution) {
+  const result = execution?.result ?? {};
+  return {
+    tool: execution?.tool ?? null,
+    result: {
+      blockId: result.blockId ?? null,
+      title: result.title ?? null,
+      operation: result.operation ?? null,
+      displayValue: result.displayValue ?? null,
+      value: result.value ?? null,
+      entries: (result.entries ?? []).slice(0, 5).map((entry) => ({
+        label: entry.label,
+        displayValue: entry.displayValue
+      }))
+    }
+  };
 }
 
 function formatMetricLabels(metric = {}) {
@@ -984,7 +1079,7 @@ function selectHeuristicArchetype({ appConfig, domain, panel, context }) {
 }
 
 function isInProgress(run) {
-  return run?.status === "in_progress";
+  return run?.status === "in_progress" || run?.status === "queued";
 }
 
 export class AgentRuntime {
@@ -1000,7 +1095,308 @@ export class AgentRuntime {
       error() {}
     };
     this.billingTracker = billingTracker;
+    this.activeWidgetGenerations = new Map();
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+  }
+
+  async runPlannerToolLoop({
+    appConfig,
+    domain,
+    plannerDomain,
+    plannerContext,
+    plannerRuns,
+    plannerToolRegistry,
+    reason,
+    preferredPanelId
+  }) {
+    const toolTrace = [];
+    const availableToolIds = new Set(compactToolRegistryIds(plannerToolRegistry));
+    const requireToolCall = Boolean(
+      appConfig.agent?.localTools?.enabled &&
+        appConfig.agent?.localTools?.primaryForPlanning &&
+        Array.isArray(plannerToolRegistry?.tools) &&
+        plannerToolRegistry.tools.length
+    );
+    const toolRequirementText = requireToolCall
+      ? "You must request 1 to 3 derived tool calls from the provided registry before a final workspace plan can be produced. Do not return mode=plan on this step."
+      : "If the existing evidence is sufficient, you may return mode=plan with no tool calls.";
+    const initialResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                `You plan bounded workspace adaptations for an analytical web app. Keep the host shell stable. ${toolRequirementText} Return strict JSON only.`
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Decide which derived tools, if any, should be invoked before producing a workspace plan.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(plannerToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen panel prioritization or focus." : "If you already have enough evidence, return mode=plan with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "planner_tool_request",
+          schema: plannerToolRequestSchema,
+          strict: true
+        }
+      }
+    });
+    await this.billingTracker?.recordResponseUsage({
+      response: initialResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "workspace_planning",
+      provider: "openai-responses",
+      domainId: domain.id
+    });
+
+    const decision = initialResponse.output_text
+      ? JSON.parse(initialResponse.output_text)
+      : extractJson(JSON.stringify(initialResponse.output));
+    this.logger.info("Planner tool decision received", {
+      domainId: domain.id,
+      mode: decision.mode,
+      toolCallCount: decision.toolCalls?.length ?? 0,
+      required: requireToolCall
+    }, "planner");
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+      const repairResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You must request derived tools before workspace planning. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous response did not request tools, but this planner mode requires tool invocation. Return mode=call_tools with 1 to 3 tool calls from this registry.\n\nDomain-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(plannerToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "planner_tool_request_repair",
+            schema: plannerToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response: repairResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "workspace_planning",
+        provider: "openai-responses",
+        domainId: domain.id
+      });
+      const repairedDecision = repairResponse.output_text
+        ? JSON.parse(repairResponse.output_text)
+        : extractJson(JSON.stringify(repairResponse.output));
+      if (repairedDecision.mode === "call_tools" && (repairedDecision.toolCalls ?? []).length) {
+        decision.mode = repairedDecision.mode;
+        decision.rationale = repairedDecision.rationale;
+        decision.toolCalls = repairedDecision.toolCalls;
+        this.logger.info("Planner tool decision repaired", {
+          domainId: domain.id,
+          mode: decision.mode,
+          toolCallCount: decision.toolCalls?.length ?? 0
+        }, "planner");
+      }
+    }
+
+    if (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length) {
+      return {
+        toolTrace,
+        toolDecision: decision,
+        finalResponse: null
+      };
+    }
+
+    let requestedToolCalls = [...(decision.toolCalls ?? [])];
+    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
+      const invalidToolIds = requestedToolCalls
+        .map((toolCall) => toolCall?.toolId)
+        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+      this.logger.info("Planner requested invalid tool ids", {
+        domainId: domain.id,
+        invalidToolIds
+      }, "planner");
+      const repairInvalidResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You must request only tool ids that appear in the provided registry. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous tool request included invalid tool ids: ${invalidToolIds.join(", ")}.\n\nReturn mode=call_tools with 1 to 3 tool calls using only these valid tools:\n${JSON.stringify(compactToolRegistry(plannerToolRegistry), null, 2)}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "planner_tool_request_registry_repair",
+            schema: plannerToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response: repairInvalidResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "workspace_planning",
+        provider: "openai-responses",
+        domainId: domain.id
+      });
+      const repairedInvalidDecision = repairInvalidResponse.output_text
+        ? JSON.parse(repairInvalidResponse.output_text)
+        : extractJson(JSON.stringify(repairInvalidResponse.output));
+      if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
+        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        this.logger.info("Planner invalid tool request repaired", {
+          domainId: domain.id,
+          toolCallCount: requestedToolCalls.length
+        }, "planner");
+      }
+    }
+
+    const uniqueToolCalls = [];
+    const seen = new Set();
+    for (const toolCall of requestedToolCalls.slice(0, 3)) {
+      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+        continue;
+      }
+      seen.add(toolCall.toolId);
+      uniqueToolCalls.push(toolCall);
+    }
+
+    if (!uniqueToolCalls.length) {
+      return {
+        toolTrace,
+        toolDecision: {
+          ...decision,
+          mode: "plan",
+          rationale: `${decision.rationale} No valid derived tool ids were returned after validation.`
+        },
+        finalResponse: null
+      };
+    }
+
+    const toolExecutions = uniqueToolCalls.map((toolCall) => {
+      const execution = executeDerivedTool(plannerToolRegistry, plannerContext, toolCall.toolId);
+      const traceEntry = {
+        toolId: execution.tool.id,
+        title: execution.tool.title,
+        scopeType: execution.tool.scopeType,
+        scopeTitle: execution.tool.scopeTitle,
+        operation: execution.tool.operation,
+        purpose: toolCall.purpose,
+        result: compactToolResultForModel(execution),
+        recordedAt: new Date().toISOString()
+      };
+      toolTrace.push(traceEntry);
+      return compactToolResultForModel(execution);
+    });
+    this.logger.info("Planner tools executed", {
+      domainId: domain.id,
+      toolIds: toolTrace.map((entry) => entry.toolId),
+      toolCount: toolTrace.length
+    }, "planner");
+
+    const finalResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "You plan bounded workspace adaptations for an analytical web app. Keep the host shell stable. Only reprioritize panels, order, grouping, and collapsed secondary sections. Return strict JSON only."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Use the derived tool outputs below as the primary evidence source for a bounded workspace plan.\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nDerived tool outputs:\n${JSON.stringify(toolExecutions, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "workspace_plan",
+          schema: workspacePlanSchema,
+          strict: true
+        }
+      }
+    });
+    await this.billingTracker?.recordResponseUsage({
+      response: finalResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "workspace_planning",
+      provider: "openai-responses",
+      domainId: domain.id
+    });
+    this.logger.info("Planner final plan response received", {
+      domainId: domain.id,
+      toolCount: toolTrace.length
+    }, "planner");
+
+    return {
+      toolTrace,
+      toolDecision: decision,
+      finalResponse
+    };
   }
 
   async generateDomain(prompt) {
@@ -1089,7 +1485,7 @@ export class AgentRuntime {
     const plannerContext = compactContextForPlanner(context);
     const plannerDomain = compactDomain(domain);
     const plannerRuns = compactRecentRuns(recentRuns);
-    const plannerToolSummary = buildDeterministicDomainSummary(domain, context);
+    const plannerToolRegistry = buildDomainToolRegistry(domain);
     this.logger.info("Planning workspace", {
       domainId,
       preferredPanelId,
@@ -1101,6 +1497,8 @@ export class AgentRuntime {
 
     if (!this.openai) {
       const workspacePlan = buildFallbackWorkspacePlan(domain, context, recentRuns, preferredPanelId);
+      workspacePlan.toolMode = "recipe-fallback";
+      workspacePlan.toolTrace = [];
       await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
       this.eventBus.emit("workspace.update", workspacePlan);
       this.logger.debug("Built fallback workspace plan", {
@@ -1111,51 +1509,26 @@ export class AgentRuntime {
       return workspacePlan;
     }
 
-    const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
-      reasoning: {
-        effort: appConfig.agent?.reasoningEffort ?? "medium"
-      },
-      input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "You plan bounded workspace adaptations for an analytical web app. Keep the host shell stable. Only reprioritize panels, order, grouping, and collapsed secondary sections. Return strict JSON only."
-            }
-          ]
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: `You are planning workspace priority, not doing raw numerical analysis. Use the local deterministic tool outputs as the primary evidence source and use the minimal preview summary only for grounding.\n\nAvailable local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(plannerToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\nReturn a workspace plan that keeps the UI stable while promoting the most relevant analysis.`
-            }
-          ]
-        }
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "workspace_plan",
-          schema: workspacePlanSchema,
-          strict: true
-        }
-      }
+    const planningLoop = await this.runPlannerToolLoop({
+      appConfig,
+      domain,
+      plannerDomain,
+      plannerContext,
+      plannerRuns,
+      plannerToolRegistry,
+      reason,
+      preferredPanelId
     });
-    await this.billingTracker?.recordResponseUsage({
-      response,
-      model: appConfig.agent?.model ?? "gpt-5.4",
-      operation: "workspace_planning",
-      provider: "openai-responses",
-      domainId
-    });
-
-    const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
+    const response = planningLoop.finalResponse;
+    const parsed = response?.output_text
+      ? JSON.parse(response.output_text)
+      : response
+        ? extractJson(JSON.stringify(response.output))
+        : buildFallbackWorkspacePlan(domain, context, recentRuns, preferredPanelId);
     const workspacePlan = normalizeWorkspacePlan(domain, parsed, preferredPanelId);
+    workspacePlan.toolMode = planningLoop.toolTrace.length ? "model-directed" : "model-no-tools";
+    workspacePlan.toolTrace = planningLoop.toolTrace;
+    workspacePlan.toolDecision = planningLoop.toolDecision ?? null;
     await this.configStore.saveWorkspacePlan(domainId, workspacePlan);
     this.eventBus.emit("workspace.update", workspacePlan);
     this.logger.info("Workspace plan saved", {
@@ -1179,18 +1552,87 @@ export class AgentRuntime {
     return [panel.analysisPrompt, focusHint, rationaleHint, actionsHint].filter(Boolean).join("\n\n");
   }
 
-  async selectArchetype({ appConfig, domain, panel, context }) {
-    const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
-    const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
-    const compactContext = compactContextForPanel(panel, context);
-    const panelToolSummary = buildDeterministicPanelSummary(panel, context);
-
-    if (!this.openai) {
-      return fallback;
+  async runArchetypeToolLoop({
+    appConfig,
+    domain,
+    panel,
+    archetypeBlock,
+    compactContext,
+    panelToolSummary,
+    panelToolRegistry
+  }) {
+    const toolTrace = [];
+    const billingEntries = [];
+    const availableToolIds = new Set(compactToolRegistryIds(panelToolRegistry));
+    const requireToolCall = Boolean(
+      appConfig.agent?.localTools?.enabled &&
+        appConfig.agent?.localTools?.primaryForArchetypeSelection &&
+        Array.isArray(panelToolRegistry?.tools) &&
+        panelToolRegistry.tools.length
+    );
+    const toolRequirementText = requireToolCall
+      ? "You must request 1 to 2 derived tool calls from the provided registry before final archetype selection. Do not return mode=select on this step."
+      : "If the existing evidence is sufficient, you may return mode=select with no tool calls.";
+    const initialResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `Choose the best widget archetype for the current panel from the allowed set only. Favor evidence alignment over novelty. ${toolRequirementText} Return strict JSON only.`
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Decide which derived tools, if any, should be invoked before selecting the archetype.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 2 tool calls from the registry. Choose the tools most likely to sharpen archetype selection." : "If you already have enough evidence, return mode=select with no tool calls. If you need more evidence, return mode=call_tools with up to 2 tool calls from the registry."}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "archetype_tool_request",
+          schema: archetypeToolRequestSchema,
+          strict: true
+        }
+      }
+    });
+    const initialBillingEntry = await this.billingTracker?.recordResponseUsage({
+      response: initialResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "archetype_selection",
+      provider: "openai-responses",
+      domainId: domain.id,
+      panelId: panel.id,
+      panelTitle: panel.title
+    });
+    if (initialBillingEntry) {
+      billingEntries.push(initialBillingEntry);
     }
 
-    try {
-      const response = await this.openai.responses.create({
+    const decision = initialResponse.output_text
+      ? JSON.parse(initialResponse.output_text)
+      : extractJson(JSON.stringify(initialResponse.output));
+    this.logger.info("Archetype tool decision received", {
+      domainId: domain.id,
+      panelId: panel.id,
+      mode: decision.mode,
+      toolCallCount: decision.toolCalls?.length ?? 0,
+      required: requireToolCall
+    }, "planner");
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+      const repairResponse = await this.openai.responses.create({
         model: appConfig.agent?.model ?? "gpt-5.4",
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
@@ -1202,7 +1644,7 @@ export class AgentRuntime {
               {
                 type: "input_text",
                 text:
-                  "Choose the best widget archetype for the current panel from the allowed set only. Favor evidence alignment over novelty. Return strict JSON only."
+                  "You must request derived tools before selecting the archetype. Return strict JSON only."
               }
             ]
           },
@@ -1211,7 +1653,7 @@ export class AgentRuntime {
             content: [
               {
                 type: "input_text",
-                text: `Pick the best archetype from the allowed set using the deterministic local tool output as the primary evidence source.\n\nAvailable local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}`
+                text: `The previous response did not request tools, but this archetype-selection mode requires tool invocation. Return mode=call_tools with 1 to 2 tool calls from this registry.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}`
               }
             ]
           }
@@ -1219,14 +1661,14 @@ export class AgentRuntime {
         text: {
           format: {
             type: "json_schema",
-            name: "archetype_selection",
-            schema: archetypeSelectionSchema,
+            name: "archetype_tool_request_repair",
+            schema: archetypeToolRequestSchema,
             strict: true
           }
         }
       });
-      await this.billingTracker?.recordResponseUsage({
-        response,
+      const repairBillingEntry = await this.billingTracker?.recordResponseUsage({
+        response: repairResponse,
         model: appConfig.agent?.model ?? "gpt-5.4",
         operation: "archetype_selection",
         provider: "openai-responses",
@@ -1234,8 +1676,244 @@ export class AgentRuntime {
         panelId: panel.id,
         panelTitle: panel.title
       });
+      if (repairBillingEntry) {
+        billingEntries.push(repairBillingEntry);
+      }
+      const repairedDecision = repairResponse.output_text
+        ? JSON.parse(repairResponse.output_text)
+        : extractJson(JSON.stringify(repairResponse.output));
+      if (repairedDecision.mode === "call_tools" && (repairedDecision.toolCalls ?? []).length) {
+        decision.mode = repairedDecision.mode;
+        decision.rationale = repairedDecision.rationale;
+        decision.toolCalls = repairedDecision.toolCalls;
+        this.logger.info("Archetype tool decision repaired", {
+          domainId: domain.id,
+          panelId: panel.id,
+          toolCallCount: decision.toolCalls?.length ?? 0
+        }, "planner");
+      }
+    }
 
-      const parsed = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
+    let requestedToolCalls = [...(decision.toolCalls ?? [])];
+    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
+      const invalidToolIds = requestedToolCalls
+        .map((toolCall) => toolCall?.toolId)
+        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+      this.logger.info("Archetype selection requested invalid tool ids", {
+        domainId: domain.id,
+        panelId: panel.id,
+        invalidToolIds
+      }, "planner");
+      const repairInvalidResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You must request only tool ids that appear in the provided registry. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous tool request included invalid tool ids: ${invalidToolIds.join(", ")}.\n\nReturn mode=call_tools with 1 to 2 tool calls using only these valid tools:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "archetype_tool_request_registry_repair",
+            schema: archetypeToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      const repairInvalidBillingEntry = await this.billingTracker?.recordResponseUsage({
+        response: repairInvalidResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "archetype_selection",
+        provider: "openai-responses",
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title
+      });
+      if (repairInvalidBillingEntry) {
+        billingEntries.push(repairInvalidBillingEntry);
+      }
+      const repairedInvalidDecision = repairInvalidResponse.output_text
+        ? JSON.parse(repairInvalidResponse.output_text)
+        : extractJson(JSON.stringify(repairInvalidResponse.output));
+      if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
+        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        this.logger.info("Archetype invalid tool request repaired", {
+          domainId: domain.id,
+          panelId: panel.id,
+          toolCallCount: requestedToolCalls.length
+        }, "planner");
+      }
+    }
+
+    if (decision.mode !== "call_tools" || !requestedToolCalls.length) {
+      return {
+        toolMode: "model-no-tools",
+        toolTrace,
+        toolDecision: decision,
+        selection: null,
+        billingEntries
+      };
+    }
+
+    const uniqueToolCalls = [];
+    const seen = new Set();
+    for (const toolCall of requestedToolCalls.slice(0, 2)) {
+      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+        continue;
+      }
+      seen.add(toolCall.toolId);
+      uniqueToolCalls.push(toolCall);
+    }
+
+    if (!uniqueToolCalls.length) {
+      return {
+        toolMode: "model-no-tools",
+        toolTrace,
+        toolDecision: {
+          ...decision,
+          mode: "select",
+          rationale: `${decision.rationale} No valid derived tool ids were returned after validation.`
+        },
+        selection: null,
+        billingEntries
+      };
+    }
+
+    const toolExecutions = uniqueToolCalls.map((toolCall) => {
+      const execution = executeDerivedTool(panelToolRegistry, compactContext, toolCall.toolId);
+      const traceEntry = {
+        toolId: execution.tool.id,
+        title: execution.tool.title,
+        scopeType: execution.tool.scopeType,
+        scopeTitle: execution.tool.scopeTitle,
+        operation: execution.tool.operation,
+        purpose: toolCall.purpose,
+        result: compactToolResultForModel(execution),
+        recordedAt: new Date().toISOString()
+      };
+      toolTrace.push(traceEntry);
+      return compactToolResultForModel(execution);
+    });
+    this.logger.info("Archetype tools executed", {
+      domainId: domain.id,
+      panelId: panel.id,
+      toolIds: toolTrace.map((entry) => entry.toolId),
+      toolCount: toolTrace.length
+    }, "planner");
+
+    const finalResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "Choose the best widget archetype for the current panel from the allowed set only. Favor evidence alignment over novelty. Return strict JSON only."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Select the best archetype using the derived tool outputs below as the primary evidence source.\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nDerived tool outputs:\n${JSON.stringify(toolExecutions, null, 2)}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "archetype_selection",
+          schema: archetypeSelectionSchema,
+          strict: true
+        }
+      }
+    });
+    const finalBillingEntry = await this.billingTracker?.recordResponseUsage({
+      response: finalResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "archetype_selection",
+      provider: "openai-responses",
+      domainId: domain.id,
+      panelId: panel.id,
+      panelTitle: panel.title
+    });
+    if (finalBillingEntry) {
+      billingEntries.push(finalBillingEntry);
+    }
+    const parsed = finalResponse.output_text
+      ? JSON.parse(finalResponse.output_text)
+      : extractJson(JSON.stringify(finalResponse.output));
+    this.logger.info("Archetype final selection received", {
+      domainId: domain.id,
+      panelId: panel.id,
+      selectedArchetype: parsed.selectedArchetype,
+      toolCount: toolTrace.length
+    }, "planner");
+
+    return {
+      toolMode: "model-directed",
+      toolTrace,
+      toolDecision: decision,
+      selection: parsed,
+      billingEntries
+    };
+  }
+
+  async selectArchetype({ appConfig, domain, panel, context }) {
+    const archetypeBlock = buildArchetypePromptBlock(appConfig, domain, panel);
+    const fallback = selectHeuristicArchetype({ appConfig, domain, panel, context });
+    const compactContext = compactContextForPanel(panel, context);
+    const panelToolSummary = buildDeterministicPanelSummary(panel, context);
+    const panelToolRegistry = buildPanelToolRegistry(domain, panel);
+
+    if (!this.openai) {
+      return {
+        ...fallback,
+        toolMode: "recipe-fallback",
+        toolTrace: [],
+        toolDecision: null,
+        billingEntries: []
+      };
+    }
+
+    try {
+      const selectionLoop = await this.runArchetypeToolLoop({
+        appConfig,
+        domain,
+        panel,
+        archetypeBlock,
+        compactContext,
+        panelToolSummary,
+        panelToolRegistry
+      });
+      const parsed = selectionLoop.selection ?? fallback;
       const allowedArchetypes = archetypeBlock.allowed;
 
       if (!allowedArchetypes.includes(parsed.selectedArchetype)) {
@@ -1244,16 +1922,257 @@ export class AgentRuntime {
           selectedArchetype: parsed.selectedArchetype,
           allowedArchetypes
         }, "planner");
-        return fallback;
+        return {
+          ...fallback,
+          toolMode: selectionLoop.toolMode,
+          toolTrace: selectionLoop.toolTrace,
+          toolDecision: selectionLoop.toolDecision,
+          billingEntries: selectionLoop.billingEntries ?? []
+        };
       }
 
-      return parsed;
+      return {
+        ...parsed,
+        toolMode: selectionLoop.toolMode,
+        toolTrace: selectionLoop.toolTrace,
+        toolDecision: selectionLoop.toolDecision,
+        billingEntries: selectionLoop.billingEntries ?? []
+      };
     } catch (error) {
       this.logger.warn("Archetype selection fell back to heuristic", {
         panelId: panel.id,
         error: error.message
       }, "planner");
-      return fallback;
+      return {
+        ...fallback,
+        toolMode: "recipe-fallback",
+        toolTrace: [],
+        toolDecision: null,
+        billingEntries: []
+      };
+    }
+  }
+
+  async persistRunUpdate(run, patch = {}) {
+    const nextRun = {
+      ...run,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+    await this.configStore.saveRun(nextRun);
+    this.eventBus.emit("run.update", nextRun);
+    return nextRun;
+  }
+
+  async executeRunPipeline({
+    runId,
+    appConfig,
+    domain,
+    panel,
+    dataSources,
+    sessions,
+    contextOverride = null,
+    workspacePlanOverride = null,
+    trigger = "manual"
+  }) {
+    let run = await this.configStore.getRun(runId);
+    if (!run) {
+      return;
+    }
+
+    try {
+      run = await this.persistRunUpdate(run, {
+        progressPhase: "context",
+        progressLabel: "Preparing Context",
+        progressMessage: "Collecting source previews and deterministic local findings."
+      });
+
+      const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
+      const analysisPanelTools = buildDeterministicPanelSummary(panel, context);
+      run = await this.persistRunUpdate(run, {
+        context,
+        localFindings: analysisPanelTools
+      });
+
+      run = await this.persistRunUpdate(run, {
+        progressPhase: "planning",
+        progressLabel: "Planning Workspace",
+        progressMessage: "Reconsidering panel focus and workspace layout from the latest evidence."
+      });
+      const workspacePlan = workspacePlanOverride
+        ? workspacePlanOverride
+        : await this.planWorkspace({ domainId: domain.id, preferredPanelId: panel.id, reason: "run-request", contextOverride: context }).catch(() =>
+            this.configStore.getWorkspacePlan(domain.id)
+          );
+
+      run = await this.persistRunUpdate(run, {
+        progressPhase: "archetype",
+        progressLabel: "Selecting Archetype",
+        progressMessage: "Comparing allowed presentation archetypes against current evidence."
+      });
+      const archetypeSelection = await this.selectArchetype({ appConfig, domain, panel, context });
+      const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, archetypeSelection.selectedArchetype);
+      const analysisContract = buildArchetypeAnalysisContract(appConfig, archetypeSelection.selectedArchetype);
+      const archetypeEntryIds = (archetypeSelection.billingEntries ?? []).map((entry) => entry.id).filter(Boolean);
+      if (archetypeEntryIds.length) {
+        await this.billingTracker?.attachEntriesToRun(archetypeEntryIds, run.id);
+      }
+      run = await this.persistRunUpdate(run, {
+        selectedArchetype: archetypeSelection.selectedArchetype,
+        archetypeReason: archetypeSelection.reason,
+        archetypeConfidence: archetypeSelection.confidence,
+        archetypeToolMode: archetypeSelection.toolMode ?? null,
+        archetypeToolTrace: archetypeSelection.toolTrace ?? [],
+        archetypeToolDecision: archetypeSelection.toolDecision ?? null,
+        archetypeTitle: selectedArchetypeDefinition?.title ?? archetypeSelection.selectedArchetype,
+        billing: archetypeEntryIds.length
+          ? {
+              ...(run.billing ?? {}),
+              archetypeEntryIds
+            }
+          : run.billing,
+        archetypeCost: archetypeEntryIds.length
+          ? {
+              totalUsd: (archetypeSelection.billingEntries ?? []).reduce(
+                (sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0),
+                0
+              )
+            }
+          : run.archetypeCost ?? null
+      });
+
+      if (!this.openai) {
+        const report = buildFallbackReport(panel, context);
+        report.findings = analysisPanelTools.findings ?? [];
+        report.localFindings = analysisPanelTools;
+        report.details = mergeArchetypeDetails(
+          analysisContract,
+          report.details,
+          buildArchetypeDetails({ appConfig, panel, run, report, context })
+        );
+        run = await this.persistRunUpdate(run, {
+          status: "completed",
+          report,
+          progressPhase: "widget_pending",
+          progressLabel: "Widget Pending",
+          progressMessage: "Analysis is complete. Generating the browser widget artifact next.",
+          widgetStatus: "pending"
+        });
+        void this.generateWidgetForRun(run.id, domain, panel);
+        return;
+      }
+
+      const analysisContext = compactContextForPanel(panel, context);
+      const analysisDomain = compactDomain(domain);
+      const analysisPanel = compactPanel(panel);
+      const analysisWorkspacePlan = compactWorkspacePlan(workspacePlan, panel.id);
+      const analysisDomainTools = buildDeterministicDomainSummary(domain, context);
+      const analysisToolRegistry = buildPanelToolRegistry(domain, panel);
+
+      this.logger.info("Starting panel analysis", {
+        domainId: domain.id,
+        panelId: panel.id,
+        panelTitle: panel.title,
+        trigger,
+        provider: this.openai ? "openai" : "fallback",
+        previewCount: context.previewCount,
+        focusPanelId: workspacePlan?.focusPanelId ?? null,
+        selectedArchetype: archetypeSelection.selectedArchetype
+      }, "analysis");
+
+      run = await this.persistRunUpdate(run, {
+        progressPhase: "analysis_request",
+        progressLabel: "Submitting Analysis",
+        progressMessage: "Sending the prepared task to the model."
+      });
+
+      const previousResponseId = appConfig.agent?.reuseResponseHistory ? sessions[domain.id]?.previousResponseId : undefined;
+      const response = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        store: true,
+        background: Boolean(appConfig.agent?.allowBackground),
+        ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You are an analytical backend. Local deterministic tools have already computed the numerical and ranking work. Your job is planning, interpretation, confidence handling, and presentation. Return strict JSON with keys narrative, highlights, details, and chart. The details array is required for the selected archetype. The chart object must contain type, title, labels, and values."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Stable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nPanel-specific exposed tool registry:\n${JSON.stringify(analysisToolRegistry, null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
+                  id: run.selectedArchetype,
+                  title: run.archetypeTitle,
+                  reason: run.archetypeReason,
+                  confidence: run.archetypeConfidence,
+                  allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
+                }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
+              }
+            ]
+          }
+        ]
+      });
+
+      run = await this.persistRunUpdate(run, {
+        remoteResponseId: response.id,
+        status: response.status === "completed" ? "completed" : "in_progress",
+        progressPhase: response.status === "completed" ? "finalizing_report" : "analysis_running",
+        progressLabel: response.status === "completed" ? "Finalizing Report" : "Analysis Running",
+        progressMessage:
+          response.status === "completed"
+            ? "Model output received. Normalizing report structure and preparing widget generation."
+            : "Model analysis is running on the server."
+      });
+      this.logger.info("OpenAI analysis response received", {
+        runId: run.id,
+        domainId: domain.id,
+        panelId: panel.id,
+        remoteResponseId: response.id,
+        status: run.status
+      }, "analysis");
+
+      if (appConfig.agent?.reuseResponseHistory) {
+        sessions[domain.id] = {
+          previousResponseId: response.id,
+          updatedAt: new Date().toISOString()
+        };
+        await this.configStore.saveSessions(sessions);
+      }
+
+      if (run.status === "completed") {
+        await this.completeRun(run.id, domain, panel, response);
+        return;
+      }
+
+      void this.monitorRun(run.id, domain, panel);
+    } catch (error) {
+      const current = (await this.configStore.getRun(runId)) ?? run;
+      if (!current) {
+        return;
+      }
+      await this.persistRunUpdate(current, {
+        status: "failed",
+        progressPhase: "failed",
+        progressLabel: "Failed",
+        progressMessage: error.message,
+        error: error.message
+      });
+      this.logger.warn("Analysis pipeline failed", {
+        runId,
+        panelId: panel.id,
+        error: error.message
+      }, "analysis");
     }
   }
 
@@ -1304,16 +2223,11 @@ export class AgentRuntime {
   }
 
   async runAnalysis({ domainId, panelId, contextOverride = null, workspacePlanOverride = null, trigger = "manual" }) {
-    const [appConfig, domain, dataSources, sessions, workspacePlan] = await Promise.all([
+    const [appConfig, domain, dataSources, sessions] = await Promise.all([
       this.configStore.getAppConfig(),
       this.configStore.getDomain(domainId),
       this.configStore.getDataSources(),
-      this.configStore.getSessions(),
-      workspacePlanOverride
-        ? Promise.resolve(workspacePlanOverride)
-        : this.planWorkspace({ domainId, preferredPanelId: panelId, reason: "run-request" }).catch(() =>
-            this.configStore.getWorkspacePlan(domainId)
-          )
+      this.configStore.getSessions()
     ]);
 
     if (!domain) {
@@ -1326,57 +2240,35 @@ export class AgentRuntime {
       throw new Error(`Unknown panel: ${panelId}`);
     }
 
-    const context = contextOverride ?? (await gatherDomainContext(domain, dataSources, { logger: this.logger }));
-    const archetypeSelection = await this.selectArchetype({ appConfig, domain, panel, context });
-    const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, archetypeSelection.selectedArchetype);
-    const analysisContract = buildArchetypeAnalysisContract(appConfig, archetypeSelection.selectedArchetype);
-    const analysisContext = compactContextForPanel(panel, context);
-    const analysisDomain = compactDomain(domain);
-    const analysisPanel = compactPanel(panel);
-    const analysisWorkspacePlan = compactWorkspacePlan(workspacePlan, panel.id);
-    const analysisDomainTools = buildDeterministicDomainSummary(domain, context);
-    const analysisPanelTools = buildDeterministicPanelSummary(panel, context);
-    this.logger.info("Starting panel analysis", {
-      domainId,
-      panelId,
-      panelTitle: panel.title,
-      trigger,
-      provider: this.openai ? "openai" : "fallback",
-      previewCount: context.previewCount,
-      focusPanelId: workspacePlan?.focusPanelId ?? null,
-      selectedArchetype: archetypeSelection.selectedArchetype
-    }, "analysis");
     const run = {
       id: crypto.randomUUID(),
       domainId,
       panelId,
       panelTitle: panel.title,
-      status: this.openai ? "queued" : "completed",
+      status: "queued",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      context,
-      report: this.openai ? null : buildFallbackReport(panel, context),
+      context: null,
+      localFindings: null,
+      report: null,
       provider: this.openai ? "openai-responses" : "local-fallback",
       trigger,
+      progressPhase: "context",
+      progressLabel: "Preparing Context",
+      progressMessage: "Collecting source previews and deterministic local findings.",
       widgetStatus: "idle",
       billing: {},
-      selectedArchetype: archetypeSelection.selectedArchetype,
-      archetypeReason: archetypeSelection.reason,
-      archetypeConfidence: archetypeSelection.confidence,
-      archetypeTitle: selectedArchetypeDefinition?.title ?? archetypeSelection.selectedArchetype,
+      selectedArchetype: null,
+      archetypeReason: null,
+      archetypeConfidence: null,
+      archetypeToolMode: null,
+      archetypeToolTrace: [],
+      archetypeToolDecision: null,
+      archetypeTitle: null,
       remoteResponseId: null,
       widgetId: null,
       widgetUrl: null
     };
-
-    if (!this.openai && run.report) {
-      run.report.details = mergeArchetypeDetails(
-        analysisContract,
-        run.report.details,
-        buildArchetypeDetails({ appConfig, panel, run, report: run.report, context: run.context })
-      );
-      run.widgetStatus = "pending";
-    }
 
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
@@ -1385,77 +2277,17 @@ export class AgentRuntime {
       status: run.status,
       provider: run.provider
     }, "analysis");
-
-    if (!this.openai) {
-      void this.generateWidgetForRun(run.id, domain, panel);
-      return run;
-    }
-
-    const previousResponseId = appConfig.agent?.reuseResponseHistory ? sessions[domainId]?.previousResponseId : undefined;
-    const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
-      store: true,
-      background: Boolean(appConfig.agent?.allowBackground),
-      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
-      reasoning: {
-        effort: appConfig.agent?.reasoningEffort ?? "medium"
-      },
-      input: [
-        {
-          role: "system",
-          content: [
-              {
-                type: "input_text",
-                text:
-                  "You are an analytical backend. Local deterministic tools have already computed the numerical and ranking work. Your job is planning, interpretation, confidence handling, and presentation. Return strict JSON with keys narrative, highlights, details, and chart. The details array is required for the selected archetype. The chart object must contain type, title, labels, and values."
-              }
-          ]
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: `Available local deterministic tools:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify({
-                id: run.selectedArchetype,
-                title: run.archetypeTitle,
-                reason: run.archetypeReason,
-                confidence: run.archetypeConfidence,
-                allowedArchetypes: getPanelAllowedArchetypes(appConfig, domain, panel)
-              }, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\nReturn details as an array of section objects. Each section should include sectionId, title, and items. Use the section ids and titles from the archetype analysis contract.`
-            }
-          ]
-        }
-      ]
-    });
-
-    run.remoteResponseId = response.id;
-    run.status = response.status === "completed" ? "completed" : "in_progress";
-    run.updatedAt = new Date().toISOString();
-    await this.configStore.saveRun(run);
-    this.eventBus.emit("run.update", run);
-    this.logger.info("OpenAI analysis response received", {
+    void this.executeRunPipeline({
       runId: run.id,
-      domainId,
-      panelId,
-      remoteResponseId: response.id,
-      status: run.status
-    }, "analysis");
-
-    if (appConfig.agent?.reuseResponseHistory) {
-      sessions[domainId] = {
-        previousResponseId: response.id,
-        updatedAt: new Date().toISOString()
-      };
-      await this.configStore.saveSessions(sessions);
-    }
-
-    if (run.status === "completed") {
-      await this.completeRun(run.id, domain, panel, response);
-      return (await this.configStore.getRun(run.id)) ?? run;
-    }
-
-    void this.monitorRun(run.id, domain, panel);
+      appConfig,
+      domain,
+      panel,
+      dataSources,
+      sessions,
+      contextOverride,
+      workspacePlanOverride,
+      trigger
+    });
     return run;
   }
 
@@ -1524,6 +2356,12 @@ export class AgentRuntime {
     if (!run) {
       return;
     }
+    run.progressPhase = "finalizing_report";
+    run.progressLabel = "Finalizing Report";
+    run.progressMessage = "Normalizing model output and preparing widget generation.";
+    run.updatedAt = new Date().toISOString();
+    await this.configStore.saveRun(run);
+    this.eventBus.emit("run.update", run);
 
     let parsed;
 
@@ -1551,6 +2389,7 @@ export class AgentRuntime {
     run.status = "completed";
     const currentAppConfig = await this.configStore.getAppConfig();
     const analysisContract = buildArchetypeAnalysisContract(currentAppConfig, run.selectedArchetype);
+    const deterministicPanelTools = run.localFindings ?? buildDeterministicPanelSummary(panel, run.context);
     const preliminaryReport = normalizeReport(parsed, panel);
     run.report = normalizeReport(
       parsed,
@@ -1558,6 +2397,9 @@ export class AgentRuntime {
       analysisContract,
       buildArchetypeDetails({ appConfig: currentAppConfig, panel, run, report: preliminaryReport, context: run.context })
     );
+    run.localFindings = deterministicPanelTools;
+    run.report.findings = deterministicPanelTools.findings ?? [];
+    run.report.localFindings = deterministicPanelTools;
     const missingSections = missingArchetypeSections(analysisContract, run.report.details);
     if (!run.billing?.analysisEntryId) {
       const entry = await this.billingTracker?.recordResponseUsage({
@@ -1591,6 +2433,9 @@ export class AgentRuntime {
     }
     run.widgetStatus = "pending";
     run.widgetError = null;
+    run.progressPhase = "widget_pending";
+    run.progressLabel = "Widget Pending";
+    run.progressMessage = "Analysis is complete. Preparing the browser widget artifact.";
     run.updatedAt = new Date().toISOString();
     await this.configStore.saveRun(run);
     this.eventBus.emit("run.update", run);
@@ -1610,9 +2455,17 @@ export class AgentRuntime {
       return;
     }
 
+    const attemptId = crypto.randomUUID();
     try {
+      this.activeWidgetGenerations.set(run.id, attemptId);
       run.widgetStatus = "in_progress";
       run.widgetError = null;
+      run.progressPhase = "widget_generating";
+      run.progressLabel = "Widget Generating";
+      run.progressMessage = "Rendering the browser widget artifact for this run.";
+      run.widgetAttemptId = attemptId;
+      run.widgetAttemptStartedAt = new Date().toISOString();
+      run.widgetRetryCount = Number(run.widgetRetryCount ?? 0);
       run.updatedAt = new Date().toISOString();
       await this.configStore.saveRun(run);
       this.eventBus.emit("run.update", run);
@@ -1626,6 +2479,10 @@ export class AgentRuntime {
       run.widgetUrl = `/generated/widgets/${widget.id}`;
       run.widgetGeneratedAt = widget.generatedAt ?? new Date().toISOString();
       run.widgetStatus = "completed";
+      run.widgetError = null;
+      run.progressPhase = "complete";
+      run.progressLabel = "Complete";
+      run.progressMessage = "Analysis and widget generation are both complete.";
       if (billingEntry) {
         run.billing = {
           ...(run.billing ?? {}),
@@ -1640,20 +2497,29 @@ export class AgentRuntime {
         panelId: panel.id
       }, "widgets");
     } catch (error) {
-      run.widgetStatus = "failed";
-      run.widgetError = error.message;
+      if (this.activeWidgetGenerations.get(run.id) === attemptId) {
+        run.widgetStatus = "failed";
+        run.widgetError = error.message;
+        run.progressPhase = "widget_failed";
+        run.progressLabel = "Widget Failed";
+        run.progressMessage = error.message;
+      }
       this.logger.warn("Widget generation failed", {
         runId: run.id,
         panelId: panel.id,
         error: error.message
       }, "widgets");
+    } finally {
+      if (this.activeWidgetGenerations.get(run.id) === attemptId) {
+        this.activeWidgetGenerations.delete(run.id);
+      }
     }
   }
 
   async generateWidgetForRun(runId, domain, panel) {
     const run = await this.configStore.getRun(runId);
 
-    if (!run?.report || run.widgetId || run.widgetStatus === "in_progress") {
+    if (!run?.report || run.widgetId || this.activeWidgetGenerations.has(runId)) {
       return;
     }
 
@@ -1664,6 +2530,7 @@ export class AgentRuntime {
   }
 
   async reconcileRecentRuns(runs = []) {
+    const appConfig = await this.configStore.getAppConfig();
     const pendingRuns = runs.filter((run) => isInProgress(run) && run.remoteResponseId);
     this.logger.debug("Reconciling recent runs", {
       pendingRunIds: pendingRuns.map((run) => run.id)
@@ -1672,6 +2539,86 @@ export class AgentRuntime {
     await Promise.allSettled(
       pendingRuns.map(async (run) => {
         await this.syncRun(run.id);
+      })
+    );
+
+    const widgetTimeoutMs = appConfig.refresh?.widgetGenerationTimeoutMs ?? 300000;
+    const widgetMaxRetries = appConfig.refresh?.widgetGenerationMaxRetries ?? 2;
+    const now = Date.now();
+    const widgetCandidates = runs.filter(
+      (run) =>
+        run?.status === "completed" &&
+        !run.widgetId &&
+        (run.widgetStatus === "pending" || run.widgetStatus === "in_progress")
+    );
+
+    await Promise.allSettled(
+      widgetCandidates.map(async (run) => {
+        const ageMs = Math.max(0, now - new Date(run.updatedAt ?? run.createdAt ?? now).getTime());
+        const domain = await this.configStore.getDomain(run.domainId);
+        const panel = domain?.panels.find((entry) => entry.id === run.panelId);
+
+        if (!domain || !panel) {
+          return;
+        }
+
+        if (run.widgetStatus === "pending") {
+          this.logger.info("Re-queueing pending widget generation", {
+            runId: run.id,
+            panelId: run.panelId,
+            ageMs
+          }, "widgets");
+          await this.generateWidgetForRun(run.id, domain, panel);
+          return;
+        }
+
+        if (run.widgetStatus === "in_progress" && this.activeWidgetGenerations.has(run.id)) {
+          return;
+        }
+
+        if (run.widgetStatus === "in_progress" && ageMs > widgetTimeoutMs) {
+          const freshRun = (await this.configStore.getRun(run.id)) ?? run;
+          if (freshRun.widgetId || freshRun.widgetStatus === "completed") {
+            return;
+          }
+          const retryCount = Number(freshRun.widgetRetryCount ?? 0);
+          if (retryCount < widgetMaxRetries) {
+            freshRun.widgetStatus = "pending";
+            freshRun.widgetError = `Widget generation exceeded ${Math.round(widgetTimeoutMs / 1000)}s; retrying attempt ${retryCount + 1} of ${widgetMaxRetries}.`;
+            freshRun.progressPhase = "widget_retrying";
+            freshRun.progressLabel = "Retrying Widget";
+            freshRun.progressMessage = freshRun.widgetError;
+            freshRun.widgetRetryCount = retryCount + 1;
+            freshRun.updatedAt = new Date().toISOString();
+            await this.configStore.saveRun(freshRun);
+            this.eventBus.emit("run.update", freshRun);
+            this.logger.warn("Retrying stale widget generation", {
+              runId: freshRun.id,
+              panelId: freshRun.panelId,
+              ageMs,
+              widgetTimeoutMs,
+              retryCount: freshRun.widgetRetryCount,
+              widgetMaxRetries
+            }, "widgets");
+            await this.generateWidgetForRun(freshRun.id, domain, panel);
+            return;
+          }
+          freshRun.widgetStatus = "failed";
+          freshRun.widgetError = `Widget generation timed out after ${Math.round(widgetTimeoutMs / 1000)}s and exhausted ${widgetMaxRetries} retries.`;
+          freshRun.progressPhase = "widget_failed";
+          freshRun.progressLabel = "Widget Failed";
+          freshRun.progressMessage = freshRun.widgetError;
+          freshRun.updatedAt = new Date().toISOString();
+          await this.configStore.saveRun(freshRun);
+          this.eventBus.emit("run.update", freshRun);
+          this.logger.warn("Marked stale widget generation as failed", {
+            runId: freshRun.id,
+            panelId: freshRun.panelId,
+            ageMs,
+            widgetTimeoutMs,
+            widgetMaxRetries
+          }, "widgets");
+        }
       })
     );
   }

@@ -8,6 +8,7 @@ const state = {
   runs: [],
   widgets: [],
   workspacePlans: {},
+  derivedToolRegistries: {},
   domainSnapshots: {},
   selectedDomainId: null,
   activePanelId: null,
@@ -27,6 +28,7 @@ const elements = {
   domainChip: document.querySelector("#domain-chip"),
   workspaceNote: document.querySelector("#workspace-note"),
   workspaceActions: document.querySelector("#workspace-actions"),
+  workspaceToolTrace: document.querySelector("#workspace-tool-trace"),
   panelRail: document.querySelector("#panel-rail"),
   panelStage: document.querySelector("#panel-stage"),
   runList: document.querySelector("#run-list"),
@@ -37,6 +39,7 @@ const elements = {
   sourceForm: document.querySelector("#source-form"),
   agentStatus: document.querySelector("#agent-status"),
   spendSummary: document.querySelector("#spend-summary"),
+  toolRegistrySummary: document.querySelector("#tool-registry-summary"),
   resetSpendButton: document.querySelector("#reset-spend-button"),
   refreshButton: document.querySelector("#refresh-button"),
   studioToggleButton: document.querySelector("#studio-toggle-button"),
@@ -107,18 +110,23 @@ function summarizePanelSpend(domainId, panelId, archetypeId = null) {
 
 function currentRunSpend(run) {
   const matchingEntries = (state.spendSummary?.recentEntries ?? []).filter((entry) => entry.runId === run?.id);
+  const derivedArchetypeUsd = matchingEntries
+    .filter((entry) => entry.operation === "archetype_selection")
+    .reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
   const derivedAnalysisUsd = matchingEntries
     .filter((entry) => entry.operation === "panel_analysis")
     .reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
   const derivedWidgetUsd = matchingEntries
     .filter((entry) => entry.operation === "widget_generation")
     .reduce((sum, entry) => sum + Number(entry.cost?.totalUsd ?? 0), 0);
+  const archetypeUsd = Number(run?.archetypeCost?.totalUsd ?? derivedArchetypeUsd ?? 0);
   const analysisUsd = Number(run?.analysisCost?.totalUsd ?? derivedAnalysisUsd ?? 0);
   const widgetUsd = Number(run?.widgetCost?.totalUsd ?? derivedWidgetUsd ?? 0);
   return {
+    archetypeUsd,
     analysisUsd,
     widgetUsd,
-    totalUsd: analysisUsd + widgetUsd
+    totalUsd: archetypeUsd + analysisUsd + widgetUsd
   };
 }
 
@@ -127,7 +135,7 @@ function getRunUpdatedAt(run) {
 }
 
 function isStaleRun(run) {
-  return run?.status === "in_progress" && Date.now() - getRunUpdatedAt(run) > STALE_RUN_MS;
+  return (run?.status === "in_progress" || run?.status === "queued") && Date.now() - getRunUpdatedAt(run) > STALE_RUN_MS;
 }
 
 function panelRuns(domainRuns, panelId) {
@@ -146,11 +154,11 @@ function latestRenderableRun(domainRuns, panelId) {
 }
 
 function activePanelRun(domainRuns, panelId) {
-  return panelRuns(domainRuns, panelId).find((run) => run.status === "in_progress" && !isStaleRun(run)) ?? null;
+  return panelRuns(domainRuns, panelId).find((run) => (run.status === "in_progress" || run.status === "queued") && !isStaleRun(run)) ?? null;
 }
 
 function stalePanelRun(domainRuns, panelId) {
-  return panelRuns(domainRuns, panelId).find((run) => run.status === "in_progress" && isStaleRun(run)) ?? null;
+  return panelRuns(domainRuns, panelId).find((run) => (run.status === "in_progress" || run.status === "queued") && isStaleRun(run)) ?? null;
 }
 
 function failedPanelRun(domainRuns, panelId) {
@@ -236,6 +244,7 @@ function setSelectedDomain(domainId) {
     activePanelId: state.activePanelId
   }, "render");
   renderDomains();
+  renderToolRegistry();
   renderCurrentDomain();
 }
 
@@ -259,6 +268,54 @@ function renderDomains() {
     button.addEventListener("click", () => setSelectedDomain(domain.id));
     elements.domainList.append(button);
   }
+}
+
+function renderToolRegistry() {
+  if (!elements.toolRegistrySummary) {
+    return;
+  }
+
+  const domain = currentDomain();
+  const registry = domain ? state.derivedToolRegistries?.[domain.id] ?? null : null;
+
+  if (!domain || !registry) {
+    elements.toolRegistrySummary.innerHTML = `<p class="hint">Select a domain to inspect how its recipes are projected into model-facing tools.</p>`;
+    return;
+  }
+
+  const domainTools = (registry.tools ?? []).filter((tool) => tool.scopeType === "domain");
+  const panelTools = (registry.tools ?? []).filter((tool) => tool.scopeType === "panel");
+  const cards = (registry.tools ?? [])
+    .slice(0, 10)
+    .map((tool) => `
+      <article class="tool-registry-card">
+        <p class="section-label">${tool.scopeType === "domain" ? "Domain Tool" : `Panel Tool · ${escapeHtml(tool.scopeTitle ?? "")}`}</p>
+        <h4>${escapeHtml(tool.title ?? tool.id)}</h4>
+        <p class="source-description">${escapeHtml(tool.description ?? "")}</p>
+        <p class="hint">Operation: <code>${escapeHtml(tool.operation ?? "")}</code>${tool.queryNames?.length ? ` · Queries: ${tool.queryNames.map((query) => `<code>${escapeHtml(query)}</code>`).join(", ")}` : ""}</p>
+      </article>
+    `)
+    .join("");
+
+  elements.toolRegistrySummary.innerHTML = `
+    <div class="tool-registry-meta">
+      <div class="metric">
+        <span class="label">Derived Tools</span>
+        <span class="value">${registry.toolCount ?? 0}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Domain Tools</span>
+        <span class="value">${domainTools.length}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Panel Tools</span>
+        <span class="value">${panelTools.length}</span>
+      </div>
+    </div>
+    <div class="tool-registry-list">
+      ${cards || '<p class="hint">No derived tools are available for this domain yet.</p>'}
+    </div>
+  `;
 }
 
 function renderSourcePreviews() {
@@ -454,6 +511,9 @@ function currentDomainRenderSignature(domain) {
 function renderWorkspacePlan(workspacePlan) {
   elements.workspaceNote.textContent = workspacePlan?.rationale ?? "Workspace is following the default domain layout.";
   elements.workspaceActions.innerHTML = "";
+  if (elements.workspaceToolTrace) {
+    elements.workspaceToolTrace.innerHTML = "";
+  }
 
   for (const action of workspacePlan?.recommendedActions ?? []) {
     const chip = document.createElement("span");
@@ -467,6 +527,36 @@ function renderWorkspacePlan(workspacePlan) {
     chip.className = "workspace-action-chip muted";
     chip.textContent = "No immediate adaptation actions recommended.";
     elements.workspaceActions.append(chip);
+  }
+
+  if (elements.workspaceToolTrace) {
+    const toolTrace = workspacePlan?.toolTrace ?? [];
+    if (toolTrace.length) {
+      elements.workspaceToolTrace.innerHTML = `
+        <p class="section-label">Planner Tool Trace</p>
+        ${toolTrace.map((entry) => `
+          <article class="workspace-tool-trace-card">
+            <p class="section-label">${escapeHtml(entry.scopeType ?? "tool")} · ${escapeHtml(entry.scopeTitle ?? "")}</p>
+            <h4>${escapeHtml(entry.title ?? entry.toolId ?? "Derived Tool")}</h4>
+            <p class="hint">${escapeHtml(entry.purpose ?? "Model-requested derived tool invocation.")}</p>
+            <p class="hint">Top result: ${escapeHtml(
+              entry.result?.result?.displayValue ??
+              entry.result?.result?.entries?.[0]?.displayValue ??
+              entry.result?.result?.entries?.[0]?.label ??
+              "No result summary"
+            )}</p>
+          </article>
+        `).join("")}
+      `;
+    } else if (workspacePlan?.toolMode) {
+      elements.workspaceToolTrace.innerHTML = `
+        <p class="section-label">Planner Tool Trace</p>
+        <article class="workspace-tool-trace-card">
+          <h4>No model-directed tool calls</h4>
+          <p class="hint">Planner mode: ${escapeHtml(workspacePlan.toolMode)}</p>
+        </article>
+      `;
+    }
   }
 
   if (elements.sourcePreviewSection) {
@@ -816,8 +906,12 @@ function renderRunLifecycle(run, transientState) {
     `;
   }
 
+  const phaseLabel = run.progressLabel || null;
+  const phaseNote = run.progressMessage || null;
   const effectiveWidgetStatus = run.widgetStatus ?? (run.widgetId ? "completed" : "idle");
-  const analysisLabel = run.status === "in_progress"
+  const analysisLabel = run.status === "queued"
+    ? "Preparing"
+    : run.status === "in_progress"
     ? "Analysis Running"
     : run.status === "failed"
       ? "Analysis Failed"
@@ -830,9 +924,14 @@ function renderRunLifecycle(run, transientState) {
         ? "Widget Failed"
         : effectiveWidgetStatus === "pending"
           ? "Widget Pending"
-          : "Widget Idle";
+        : "Widget Idle";
+  const shouldRenderPhaseChip = phaseLabel && phaseLabel !== analysisLabel && phaseLabel !== widgetLabel;
 
-  const note = run.status === "in_progress"
+  const note = phaseNote
+    ? phaseNote
+    : run.status === "queued"
+      ? "Morphy is still preparing the run before the main analysis begins."
+    : run.status === "in_progress"
     ? "The analytical pass is still running on the server."
     : run.status === "completed" && (effectiveWidgetStatus === "pending" || effectiveWidgetStatus === "in_progress")
       ? "The report is ready. Browser widget generation is still in progress."
@@ -846,7 +945,7 @@ function renderRunLifecycle(run, transientState) {
 
   return `
     <div class="panel-phase-card">
-      <span class="phase-chip ${run.status === "in_progress" ? "active" : run.status === "failed" ? "failed" : "done"}">${analysisLabel}</span>
+      <span class="phase-chip ${run.status === "queued" || run.status === "in_progress" ? "active" : run.status === "failed" ? "failed" : "done"}">${analysisLabel}</span>
       <span class="phase-chip ${
         effectiveWidgetStatus === "in_progress" || effectiveWidgetStatus === "pending"
           ? "active"
@@ -856,6 +955,7 @@ function renderRunLifecycle(run, transientState) {
               ? "done"
               : ""
       }">${widgetLabel}</span>
+      ${shouldRenderPhaseChip ? `<span class="phase-chip active">${escapeHtml(phaseLabel)}</span>` : ""}
       <span class="phase-note">${note}</span>
     </div>
   `;
@@ -1005,10 +1105,29 @@ function renderArchetypeMeta(panel, run, domain) {
     : [];
   const panelSpend = domain ? summarizePanelSpend(domain.id, panel.id) : null;
   const archetypeSpend = domain && run?.selectedArchetype ? summarizePanelSpend(domain.id, panel.id, run.selectedArchetype) : null;
+  const archetypeToolTrace = Array.isArray(run?.archetypeToolTrace) ? run.archetypeToolTrace : [];
+  const archetypeToolMode = run?.archetypeToolMode ?? null;
+  const archetypeToolTraceMarkup = run
+    ? archetypeToolTrace.length
+      ? `
+        <div class="archetype-tool-trace">
+          <p class="panel-archetype-meta">Selection tools: ${escapeHtml(archetypeToolMode || "model-directed")}</p>
+          ${archetypeToolTrace.map((entry) => `
+            <div class="archetype-tool-trace-card">
+              <strong>${escapeHtml(entry.title || entry.toolId)}</strong>
+              <p class="panel-archetype-meta">${escapeHtml(entry.purpose || entry.operation || "")}</p>
+            </div>
+          `).join("")}
+        </div>
+      `
+      : archetypeToolMode
+        ? `<p class="panel-archetype-meta">Selection tools: ${escapeHtml(archetypeToolMode)}</p>`
+        : ""
+    : "";
   const runSpend = currentRunSpend(run);
   const spendMeta = run
     ? `
-      <p class="panel-archetype-meta">Current run spend: ${formatUsd(runSpend.totalUsd)}${runSpend.analysisUsd ? ` · analysis ${formatUsd(runSpend.analysisUsd)}` : ""}${runSpend.widgetUsd ? ` · widget ${formatUsd(runSpend.widgetUsd)}` : ""}</p>
+      <p class="panel-archetype-meta">Current run spend: ${formatUsd(runSpend.totalUsd)}${runSpend.archetypeUsd ? ` · archetype ${formatUsd(runSpend.archetypeUsd)}` : ""}${runSpend.analysisUsd ? ` · analysis ${formatUsd(runSpend.analysisUsd)}` : ""}${runSpend.widgetUsd ? ` · widget ${formatUsd(runSpend.widgetUsd)}` : ""}</p>
       <p class="panel-archetype-meta">Panel cumulative: ${formatUsd(panelSpend?.totalUsd ?? 0)}${run?.selectedArchetype ? ` · this archetype ${formatUsd(archetypeSpend?.totalUsd ?? 0)}` : ""}</p>
     `
     : panelSpend?.entries
@@ -1030,6 +1149,7 @@ function renderArchetypeMeta(panel, run, domain) {
           <span class="archetype-badge">${escapeHtml(allowed)}</span>
         </div>
         ${spendMeta}
+        ${archetypeToolTraceMarkup}
         ${guidance}
       </div>
     `;
@@ -1048,6 +1168,7 @@ function renderArchetypeMeta(panel, run, domain) {
       </div>
       <p class="panel-archetype-meta">${escapeHtml(confidence)}</p>
       ${spendMeta}
+      ${archetypeToolTraceMarkup}
       ${reason}
     </div>
   `;
@@ -1234,24 +1355,24 @@ function renderCurrentDomain() {
     `
     : transientState?.status === "starting"
       ? `<p class="hint">Starting analysis run...</p>`
-    : activeRun?.status === "in_progress"
-      ? `<p class="hint">Analysis is running. Results will appear when the server-side agent completes.</p>`
+    : activeRun?.status === "queued" || activeRun?.status === "in_progress"
+      ? `<p class="hint">${escapeHtml(activeRun?.progressMessage || (activeRun?.status === "queued" ? "Morphy is preparing this run." : "Analysis is running. Results will appear when the server-side agent completes."))}</p>`
     : staleRun
       ? `<p class="hint">A previous analysis run appears stale. Run analysis again to start a fresh job.</p>`
     : failedRun
       ? `<p class="hint">Analysis failed${failedRun.error ? `: ${escapeHtml(failedRun.error)}` : "."}</p>`
     : `<p class="hint">Run analysis to populate this panel.</p>`;
-  runButton.disabled = transientState?.status === "starting" || activeRun?.status === "in_progress";
+  runButton.disabled = transientState?.status === "starting" || activeRun?.status === "in_progress" || activeRun?.status === "queued";
   runButton.textContent = transientState?.status === "starting"
     ? "Starting..."
-    : activeRun?.status === "in_progress"
-      ? "Running..."
+    : activeRun?.status === "queued" || activeRun?.status === "in_progress"
+      ? (activeRun?.progressLabel || "Running...")
       : "Run Analysis";
-  forceRunButton.disabled = transientState?.status === "starting" || activeRun?.status === "in_progress";
+  forceRunButton.disabled = transientState?.status === "starting" || activeRun?.status === "in_progress" || activeRun?.status === "queued";
   forceRunButton.textContent = transientState?.status === "starting"
     ? "Starting..."
-    : activeRun?.status === "in_progress"
-      ? "Running..."
+    : activeRun?.status === "queued" || activeRun?.status === "in_progress"
+      ? (activeRun?.progressLabel || "Running...")
       : "Force Re-run";
   runButton.addEventListener("click", () => runAnalysis(domain.id, panel.id, false));
   forceRunButton.addEventListener("click", () => runAnalysis(domain.id, panel.id, true));
@@ -1282,9 +1403,12 @@ function renderRuns() {
     node.querySelector(".run-domain").textContent = domain?.name || run.domainId;
     node.querySelector(".run-title").textContent = run.panelTitle;
     const effectiveWidgetStatus = run.widgetStatus ?? (run.widgetId ? "completed" : null);
-    node.querySelector(".status-pill").textContent = effectiveWidgetStatus && run.status === "completed"
-      ? `${run.status} · widget ${effectiveWidgetStatus.replaceAll("_", " ")}`
-      : run.status;
+    node.querySelector(".status-pill").textContent =
+      run.status === "queued"
+        ? (run.progressLabel || "queued")
+        : effectiveWidgetStatus && run.status === "completed"
+          ? `${run.status} · widget ${effectiveWidgetStatus.replaceAll("_", " ")}`
+          : run.status;
     node.querySelector(".run-report").innerHTML = run.report
       ? `
         ${run.report.narrative.map((entry) => `<p>${escapeHtml(entry)}</p>`).join("")}
@@ -1323,6 +1447,7 @@ async function refresh() {
   state.runs = payload.runs;
   state.widgets = payload.widgets;
   state.spendSummary = payload.spendSummary ?? null;
+  state.derivedToolRegistries = payload.derivedToolRegistries ?? {};
   state.domainSnapshots = payload.domainSnapshots ?? {};
   state.workspacePlans = {
     ...(payload.workspacePlans ?? {})
@@ -1364,6 +1489,7 @@ async function refresh() {
   renderAgentStatus(payload.agent);
   renderSpendSummary();
   renderDomains();
+  renderToolRegistry();
   renderSourcePreviews();
   if (shouldRenderCurrentDomain) {
     renderCurrentDomain();
@@ -1380,10 +1506,14 @@ async function createDomain(event) {
     return;
   }
 
-  const domain = await request("/api/domains/generate", {
+  const result = await request("/api/domains/generate", {
     method: "POST",
     body: JSON.stringify({ prompt })
   });
+  const domain = result.domain ?? result;
+  if (result.derivedToolRegistry && domain?.id) {
+    state.derivedToolRegistries[domain.id] = result.derivedToolRegistry;
+  }
 
   elements.domainPrompt.value = "";
   await refresh();
@@ -1433,7 +1563,7 @@ async function runAnalysis(domainId, panelId, force = false) {
   renderCurrentDomain();
   renderRuns();
 
-  if (run.status === "in_progress") {
+  if (run.status === "in_progress" || run.status === "queued") {
     logger.debug("Run entered polling state", { runId: run.id, domainId, panelId }, "events");
     await pollRun(run.id);
   } else {

@@ -10,6 +10,7 @@ import { WidgetService } from "./services/widget-service.js";
 import { RefreshCoordinator } from "./services/refresh-coordinator.js";
 import { buildServerDiagnostics, createLogger } from "./lib/logger.js";
 import { BillingTracker } from "./lib/billing.js";
+import { buildDomainToolRegistry } from "./services/analysis-tools.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,6 +62,9 @@ export async function createApp() {
       const sourcePreviews = liveState.sourcePreviews?.length
         ? liveState.sourcePreviews
         : await Promise.all(dataSources.map((source) => previewSource(source, { logger })));
+      const derivedToolRegistries = Object.fromEntries(
+        domains.map((domain) => [domain.id, buildDomainToolRegistry(domain)])
+      );
       const snapshotRunIds = new Set(
         Object.values(liveState.domainSnapshots ?? {})
           .flatMap((snapshot) => Object.values(snapshot?.panelStatus ?? {}))
@@ -100,6 +104,7 @@ export async function createApp() {
         runs: recentRuns,
         widgets: widgets.slice(0, 24),
         workspacePlans,
+        derivedToolRegistries,
         domainSnapshots: liveState.domainSnapshots ?? {},
         liveStateUpdatedAt: liveState.updatedAt ?? null,
         spendSummary,
@@ -146,11 +151,15 @@ export async function createApp() {
       }
 
       const domain = await agentRuntime.generateDomain(prompt);
+      const derivedToolRegistry = buildDomainToolRegistry(domain);
       logger.info("Domain generated via API", {
         domainId: domain.id,
         panelCount: domain.panels.length
       }, "server");
-      response.status(201).json(domain);
+      response.status(201).json({
+        domain,
+        derivedToolRegistry
+      });
     } catch (error) {
       next(error);
     }
