@@ -1247,7 +1247,7 @@ function renderArchetypeDetails(run) {
         if (archetype === "pressure-board") {
           return [
             {
-              title: "Backlog Leaders",
+              title: "Comparison Leaders",
               items: top.map((entry) => `${entry.label}: ${entry.value}`)
             },
             {
@@ -1260,11 +1260,11 @@ function renderArchetypeDetails(run) {
         if (archetype === "job-detail-sheet" || archetype === "correlation-inspector") {
           return [
             {
-              title: archetype === "job-detail-sheet" ? "Candidate Jobs" : "Linked Entities",
+              title: archetype === "job-detail-sheet" ? "Focus Entities" : "Linked Entities",
               items: highlights
             },
             {
-              title: "Operator Notes",
+              title: "Guidance Notes",
               items: narrative
             }
           ];

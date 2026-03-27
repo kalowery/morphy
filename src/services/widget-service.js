@@ -1400,9 +1400,9 @@ function buildFallbackBundle(domain, panel, run) {
           </div>
         </section>
         <div class="detail-grid">
-          <section class="widget-card">
-            <p class="eyebrow">Resource Profile</p>
-            <div class="viz-stack">
+        <section class="widget-card">
+          <p class="eyebrow">Behavioral Profile</p>
+          <div class="viz-stack">
               \${entries.map((entry) => \`
                 <div class="viz-row">
                   <span>\${escapeHtml(entry.label)}</span>
@@ -1412,9 +1412,9 @@ function buildFallbackBundle(domain, panel, run) {
               \`).join("")}
             </div>
           </section>
-          <section class="widget-card">
-            <p class="eyebrow">Candidate Drilldowns</p>
-            <div class="detail-list">
+        <section class="widget-card">
+          <p class="eyebrow">Follow-up Drilldowns</p>
+          <div class="detail-list">
               \${(report.highlights ?? []).slice(0, 5).map((entry) => \`<p>\${escapeHtml(entry)}</p>\`).join("")}
             </div>
           </section>
@@ -1854,8 +1854,8 @@ export class WidgetService {
       model: appConfig.codegen?.model ?? "gpt-5.4",
       archetype: run.selectedArchetype ?? null
     }, "widgets");
-    const archetype = getArchetypeDefinition(appConfig, run.selectedArchetype);
-    const widgetContract = buildArchetypeWidgetContract(appConfig, run.selectedArchetype);
+    const archetype = getArchetypeDefinition(appConfig, domain, run.selectedArchetype);
+    const widgetContract = buildArchetypeWidgetContract(appConfig, domain, run.selectedArchetype);
     const panelToolSummary = compactToolSummaryForWidget(buildDeterministicPanelSummary(panel, run.context));
     const compactRun = compactWidgetRun(run);
     const panelToolRegistry = buildPanelToolRegistry(domain, panel);

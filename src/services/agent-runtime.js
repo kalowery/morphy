@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import OpenAI from "openai";
 import { gatherDomainContext, previewSource } from "./data-sources.js";
 import {
@@ -33,6 +34,46 @@ const domainSchema = {
     icon: { type: "string" },
     generationPrompt: { type: ["string", "null"] },
     generationEvidenceSummary: { type: ["string", "null"] },
+    archetypes: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["library"],
+      properties: {
+        library: {
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "title", "description", "requiredSections", "detailSections", "layoutGuidance"],
+            properties: {
+              id: { type: "string" },
+              title: { type: "string" },
+              description: { type: "string" },
+              requiredSections: {
+                type: "array",
+                items: { type: "string" }
+              },
+              detailSections: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["id", "title", "description", "minItems", "maxItems"],
+                  properties: {
+                    id: { type: "string" },
+                    title: { type: "string" },
+                    description: { type: "string" },
+                    minItems: { type: ["integer", "null"] },
+                    maxItems: { type: ["integer", "null"] }
+                  }
+                }
+              },
+              layoutGuidance: { type: "string" }
+            }
+          }
+        }
+      }
+    },
     allowedArchetypes: {
       type: "array",
       items: { type: "string" }
@@ -493,6 +534,22 @@ function compactDomain(domain) {
   };
 }
 
+function compactArchetypeRegistryForGeneration(appConfig = {}) {
+  const registry = getArchetypeRegistry(appConfig);
+  return {
+    defaultArchetype: registry.defaultArchetype,
+    library: Object.fromEntries(
+      Object.entries(registry.library ?? {}).map(([id, archetype]) => [
+        id,
+        {
+          title: archetype.title,
+          description: archetype.description
+        }
+      ])
+    )
+  };
+}
+
 function compactPanel(panel) {
   return {
     id: panel.id,
@@ -621,22 +678,152 @@ function compactGenerationToolRegistryIds(toolRegistry) {
   return (toolRegistry?.tools ?? []).map((tool) => tool.id);
 }
 
+function tokenizePromptForGeneration(prompt = "") {
+  return new Set(
+    String(prompt)
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 3)
+  );
+}
+
+function scoreGenerationSourceGroup(sourceTools = [], promptTokens = new Set()) {
+  const firstTool = sourceTools[0] ?? {};
+  const haystack = [
+    firstTool.scopeTitle,
+    firstTool.sourceName,
+    firstTool.sourceType,
+    firstTool.sourceEngine,
+    ...sourceTools.map((tool) => tool.description)
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  let score = 0;
+  for (const token of promptTokens) {
+    if (haystack.includes(token)) {
+      score += token.length >= 6 ? 3 : 2;
+    }
+  }
+
+  if (sourceTools.some((tool) => tool.view === "structure")) {
+    score += 2;
+  }
+  if (sourceTools.some((tool) => tool.view === "samples")) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function selectDeterministicGenerationToolCalls(toolRegistry, prompt, maxToolCalls = 4) {
+  const tools = Array.isArray(toolRegistry?.tools) ? toolRegistry.tools : [];
+  const bySource = new Map();
+
+  for (const tool of tools) {
+    if (!tool?.sourceId) {
+      continue;
+    }
+
+    const list = bySource.get(tool.sourceId) ?? [];
+    list.push(tool);
+    bySource.set(tool.sourceId, list);
+  }
+
+  const preferredViews = ["overview", "structure", "samples"];
+  const toolCalls = [];
+  const seen = new Set();
+  const promptTokens = tokenizePromptForGeneration(prompt);
+  const rankedSourceGroups = [...bySource.values()].sort((left, right) => (
+    scoreGenerationSourceGroup(right, promptTokens) - scoreGenerationSourceGroup(left, promptTokens)
+  ));
+
+  for (const sourceTools of rankedSourceGroups) {
+    for (const view of preferredViews) {
+      const tool = sourceTools.find((entry) => entry.view === view);
+      if (!tool || seen.has(tool.id)) {
+        continue;
+      }
+      seen.add(tool.id);
+      toolCalls.push({
+        toolId: tool.id,
+        purpose: view === "overview"
+          ? "Establish datasource readiness and high-level analytical scope."
+          : view === "structure"
+            ? "Inspect schemas, fields, entities, and relationships to ground panel design."
+            : "Inspect representative contents to validate semantic interpretation and likely workflows."
+      });
+      if (toolCalls.length >= maxToolCalls) {
+        return toolCalls;
+      }
+    }
+  }
+
+  return toolCalls;
+}
+
 function compactGenerationToolResultForModel(execution) {
   const result = execution?.result ?? {};
+  const details = result.details ?? {};
+  const representativeRows = (details.representativeRows ?? details.sampleRows ?? []).slice(0, 2).map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      return row;
+    }
+
+    return Object.fromEntries(Object.entries(row).slice(0, 6));
+  });
+  const representativeQueryResults = (details.queryResults ?? []).slice(0, 3).map((queryResult) => ({
+    queryName: queryResult.queryName ?? null,
+    resultType: queryResult.resultType ?? null,
+    resultCount: queryResult.resultCount ?? null,
+    sample: (queryResult.sample ?? []).slice(0, 2).map((entry) => ({
+      labels: formatMetricLabels(entry.metric ?? {}),
+      value: entry.value
+    }))
+  }));
+
   return {
-    tool: execution?.tool ?? null,
+    tool: execution?.tool
+      ? {
+          id: execution.tool.id,
+          title: execution.tool.title,
+          scopeType: execution.tool.scopeType,
+          scopeTitle: execution.tool.scopeTitle,
+          operation: execution.tool.operation,
+          sourceType: execution.tool.sourceType ?? null,
+          sourceEngine: execution.tool.sourceEngine ?? null,
+          view: execution.tool.view ?? null
+        }
+      : null,
     result: {
       kind: result.kind ?? null,
       title: result.title ?? null,
       summary: result.summary ?? null,
-      details: result.details ?? null
+      details: {
+        issue: details.issue ?? null,
+        rowCount: details.rowCount ?? null,
+        tableCount: details.tableCount ?? null,
+        previewQueries: (details.previewQueries ?? []).slice(0, 8),
+        queryCatalog: (details.queryCatalog ?? []).slice(0, 8),
+        labelKeys: (details.labelKeys ?? []).slice(0, 8),
+        tables: (details.tables ?? []).slice(0, 8),
+        columns: (details.columns ?? []).slice(0, 12),
+        sampleKeys: (details.sampleKeys ?? []).slice(0, 8),
+        numericFields: (details.numericFields ?? []).slice(0, 8),
+        representativeRows,
+        representativeQueryResults
+      }
     }
   };
 }
 
 function formatMetricLabels(metric = {}) {
-  const keys = ["instance", "partition", "jobid", "user", "card", "device"];
-  const values = keys
+  const preferredKeys = ["instance", "partition", "jobid", "user", "card", "device"];
+  const metricKeys = Object.keys(metric);
+  const prioritizedKeys = preferredKeys.filter((key) => metricKeys.includes(key));
+  const orderedKeys = prioritizedKeys.length ? prioritizedKeys : metricKeys.slice(0, 6);
+  const values = orderedKeys
     .filter((key) => metric[key] !== undefined && metric[key] !== null && metric[key] !== "")
     .map((key) => `${key}=${metric[key]}`);
   return values.join(", ");
@@ -662,7 +849,6 @@ function compactSourceMetadataForGeneration(source) {
       name: source.name,
       type: source.type,
       description: source.description ?? "",
-      baseUrl: source.baseUrl ?? null,
       window: {
         evaluationTime: source.defaultEvaluationTime ?? source.time ?? null,
         start: source.start ?? null,
@@ -692,8 +878,12 @@ function compactSourceMetadataForGeneration(source) {
       engine: source.engine ?? source.connection?.engine ?? null,
       description: source.description ?? "",
       connection: {
-        databasePath: source.databasePath ?? source.connection?.databasePath ?? null,
-        connectionString: source.connectionString ?? source.connection?.connectionString ?? null
+        databaseLabel: source.databasePath
+          ? path.basename(source.databasePath)
+          : source.connection?.databasePath
+            ? path.basename(source.connection.databasePath)
+            : null,
+        hasConnectionString: Boolean(source.connectionString ?? source.connection?.connectionString)
       },
       previewQuery: source.previewQuery ?? null,
       schemaQuery: source.schemaQuery ?? null,
@@ -1034,6 +1224,72 @@ function compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence = [
   }));
 }
 
+function compactSourceMetadataForGenerationPrompt(compactSourceMetadata = []) {
+  return compactSourceMetadata.map((source) => ({
+    id: source.id,
+    name: source.name,
+    type: source.type,
+    engine: source.engine ?? null,
+    description: source.description ?? "",
+    window: source.window ?? null,
+    availableQueryNames: (source.availableQueryNames ?? []).slice(0, 10),
+    previewQueryNames: (source.previewQueryNames ?? []).slice(0, 8),
+    availableQueryCount: source.availableQueryCount ?? null,
+    connection: source.connection ?? null
+  }));
+}
+
+function compactGenerationEvidenceDigest(toolExecutions = []) {
+  return toolExecutions.map((execution) => ({
+    toolId: execution.tool?.id ?? null,
+    title: execution.tool?.title ?? null,
+    view: execution.tool?.view ?? null,
+    sourceType: execution.tool?.sourceType ?? null,
+    sourceEngine: execution.tool?.sourceEngine ?? null,
+    summary: execution.result?.summary ?? null,
+    details: {
+      rowCount: execution.result?.details?.rowCount ?? null,
+      tableCount: execution.result?.details?.tableCount ?? null,
+      previewQueries: (execution.result?.details?.previewQueries ?? []).slice(0, 6),
+      queryCatalog: (execution.result?.details?.queryCatalog ?? []).slice(0, 6),
+      labelKeys: (execution.result?.details?.labelKeys ?? []).slice(0, 8),
+      tables: (execution.result?.details?.tables ?? []).slice(0, 8),
+      columns: (execution.result?.details?.columns ?? []).slice(0, 10),
+      sampleKeys: (execution.result?.details?.sampleKeys ?? []).slice(0, 8),
+      numericFields: (execution.result?.details?.numericFields ?? []).slice(0, 8),
+      representativeRows: (execution.result?.details?.representativeRows ?? []).slice(0, 2),
+      representativeQueryResults: (execution.result?.details?.representativeQueryResults ?? []).slice(0, 2)
+    }
+  }));
+}
+
+function buildDomainGenerationPromptText({
+  compactSourceMetadata,
+  generationEvidenceDigest,
+  appConfig,
+  prompt
+}) {
+  return [
+    "Design a configuration-only analytical domain for Morphy.",
+    "",
+    `Available data sources: ${JSON.stringify(compactSourceMetadataForGenerationPrompt(compactSourceMetadata))}`,
+    `Grounding evidence: ${JSON.stringify(compactGenerationEvidenceDigest(generationEvidenceDigest))}`,
+    `Available archetypes: ${JSON.stringify(compactArchetypeRegistryForGeneration(appConfig))}`,
+    "",
+    `User prompt: ${prompt}`,
+    "",
+    "Requirements:",
+    "- Generate one domain-level analysisRecipe and one panel-level analysisRecipe for every panel.",
+    "- Recipes may use only scalar or top_entries blocks.",
+    "- Every panel must declare allowedArchetypes, preferredArchetype, and archetypeGuidance.",
+    "- Choose only archetype ids from the provided archetype registry.",
+    "- If the domain genuinely needs a specialized presentation mode that is not well-served by the core archetypes, you may define domain-scoped archetypes under archetypes.library and then reference them from allowedArchetypes.",
+    "- Use the grounding evidence as the primary basis for entities, relationships, workflows, controls, and panels.",
+    "- Do not invent tables, columns, metric families, labels, or operational semantics that are not supported by the evidence.",
+    "- Include generationEvidenceSummary explaining which datasource contents most strongly shaped the domain."
+  ].join("\n");
+}
+
 function extractJson(text) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : text;
@@ -1052,6 +1308,53 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
   const name = nameSource.length > 60 ? `${nameSource.slice(0, 57)}...` : nameSource;
   const id = slugify(name) || `domain-${Date.now()}`;
   const sourceIds = dataSources.slice(0, 3).map((source) => source.id);
+  const promptSuggestsTemporalView = /trend|timeline|history|over time|window/i.test(prompt);
+  const panelBlueprints = [
+    {
+      id: "overview",
+      title: "Domain Overview",
+      summary: "Summarize the main entities, signals, and caveats visible across configured sources.",
+      analysisPrompt: "Explain the broadest operating picture across the configured domain sources.",
+      chartPreference: "bar",
+      interactionMode: "report"
+    },
+    {
+      id: "relationships",
+      title: "Entity Relationships",
+      summary: "Highlight important entities, linkages, or comparisons suggested by the configured sources.",
+      analysisPrompt: "Identify the most important relationships, comparisons, or linked entities visible in the current domain.",
+      chartPreference: "bar",
+      interactionMode: "hybrid"
+    },
+    {
+      id: "investigation",
+      title: "Focused Investigation",
+      summary: "Support deeper inspection of one entity set, time range, or analytical slice.",
+      analysisPrompt: "Support a focused investigation of the most relevant subset of the current domain.",
+      chartPreference: promptSuggestsTemporalView ? "line" : "bar",
+      interactionMode: "interactive"
+    }
+  ];
+  const interactionControls = [
+    {
+      id: "entity-search",
+      label: "Entity search",
+      description: "Search for the most relevant entity or cohort in the current domain.",
+      type: "search",
+      parameter: "entity",
+      multiple: false,
+      required: false
+    },
+    {
+      id: "context-window",
+      label: "Context window",
+      description: "Adjust the active analysis window or comparison context.",
+      type: "date_range",
+      parameter: "window",
+      multiple: false,
+      required: false
+    }
+  ];
 
   return {
     id,
@@ -1071,97 +1374,31 @@ function buildFallbackDomain(prompt, dataSources, appConfig = {}) {
     dataSources: sourceIds,
     analysisRecipe: {
       focus: "Summarize the broadest operating picture from local preview evidence.",
-      blocks: [
-        {
-          id: "overview-signals",
-          title: "Overview Signals",
-          operation: "top_entries",
-          queryName: "pendingJobsByPartition",
-          labelFields: ["partition"],
-          valueField: "pendingJobs",
-          limit: 3,
-          sort: "desc"
-        }
-      ]
+      blocks: []
     },
-    panels: [
-      {
-        id: "overview",
-        title: "Domain Overview",
-        summary: "Summarize the main health or performance signals across configured sources.",
-        analysisPrompt: "Explain the most relevant operating picture across the configured domain sources.",
-        chartPreference: "bar",
-        allowedArchetypes: ["incident-summary", "risk-scoreboard"],
-        preferredArchetype: "incident-summary",
-        archetypeGuidance: "Use incident-summary for broad synthesis and risk-scoreboard when ranked outliers dominate.",
-        analysisRecipe: {
-          focus: "Summarize the main signals visible in the local preview results.",
-          blocks: [
-            {
-              id: "overview-signals",
-              title: "Overview Signals",
-              operation: "top_entries",
-              queryName: "pendingJobsByPartition",
-              labelFields: ["partition"],
-              valueField: "pendingJobs",
-              limit: 4,
-              sort: "desc"
-            }
-          ]
-        }
+    panels: panelBlueprints.map((panel) => ({
+      id: panel.id,
+      title: panel.title,
+      summary: panel.summary,
+      analysisPrompt: panel.analysisPrompt,
+      chartPreference: panel.chartPreference,
+      allowedArchetypes: getPanelAllowedArchetypes(appConfig, { allowedArchetypes: Object.keys(getArchetypeRegistry(appConfig).library) }, panel),
+      preferredArchetype: panel.chartPreference === "line" ? "timeline-analysis" : "incident-summary",
+      archetypeGuidance: panel.interactionMode === "interactive"
+        ? "Prefer layouts that support drill-down, filtering, and comparison without assuming domain-specific entities."
+        : "Prefer concise synthesis and ranked interpretation until stronger domain-specific evidence is available.",
+      analysisRecipe: {
+        focus: panel.summary,
+        blocks: []
       },
-      {
-        id: "anomalies",
-        title: "Anomalies",
-        summary: "Identify outliers, correlated warnings, and likely investigation targets.",
-        analysisPrompt: "Find the most important anomalies or outliers and explain why they matter.",
-        chartPreference: "line",
-        allowedArchetypes: ["risk-scoreboard", "timeline-analysis"],
-        preferredArchetype: "risk-scoreboard",
-        archetypeGuidance: "Use timeline-analysis only when the anomaly story is fundamentally temporal.",
-        analysisRecipe: {
-          focus: "Surface the strongest outlier signals from local preview results.",
-          blocks: [
-            {
-              id: "anomaly-signals",
-              title: "Anomaly Signals",
-              operation: "top_entries",
-              queryName: "hotGpusByTemperature",
-              labelFields: ["instance", "card"],
-              valueField: "temperatureC",
-              unit: "C",
-              limit: 4,
-              sort: "desc"
-            }
-          ]
-        }
-      },
-      {
-        id: "briefing",
-        title: "Executive Briefing",
-        summary: "Convert the current state into a concise decision-oriented brief.",
-        analysisPrompt: "Generate a concise operational briefing with priorities, risks, and confidence notes.",
-        chartPreference: "donut",
-        allowedArchetypes: ["incident-summary"],
-        preferredArchetype: "incident-summary",
-        archetypeGuidance: "Keep the briefing narrative-first.",
-        analysisRecipe: {
-          focus: "Collect the highest-priority evidence for a brief operational handoff.",
-          blocks: [
-            {
-              id: "brief-signals",
-              title: "Brief Signals",
-              operation: "top_entries",
-              queryName: "pendingJobsByPartition",
-              labelFields: ["partition"],
-              valueField: "pendingJobs",
-              limit: 3,
-              sort: "desc"
-            }
-          ]
-        }
-      }
-    ]
+      interactionMode: panel.interactionMode,
+      interactionContract: panel.interactionMode === "interactive" || panel.interactionMode === "hybrid"
+        ? {
+            summary: "Fallback interactive controls are generic until a grounded model-generated domain replaces this scaffold.",
+            controls: panel.interactionMode === "interactive" ? interactionControls : [interactionControls[0]]
+          }
+        : null
+    }))
   };
 }
 
@@ -1453,9 +1690,9 @@ function buildEvidencePools({ panel, report, context }) {
     summary.coverage?.queryWindow?.evaluationTime ? `Evidence window anchored at ${summary.coverage.queryWindow.evaluationTime}.` : null
   ].filter(Boolean);
 
-  const jobItems = rankedItems.filter((item) => /job|user|partition/i.test(item.text) || /job|user|partition/i.test(recipeText));
-  const partitionItems = rankedItems.filter((item) => /partition/i.test(item.text) || /partition|backlog|saturation|pressure|capacity/i.test(recipeText));
-  const percentItems = rankedItems.filter((item) => /%|percent/i.test(item.displayValue));
+  const linkageItems = rankedItems.filter((item) => /link|group|entity|cohort|segment|relationship|association|state|candidate|employer/i.test(item.text) || /link|group|entity|cohort|segment|relationship|association|state|candidate|employer/i.test(recipeText));
+  const comparisonItems = rankedItems.filter((item) => /compare|distribution|backlog|saturation|pressure|capacity|share|volume|difference|delta/i.test(item.text) || /compare|distribution|backlog|saturation|pressure|capacity|share|volume|difference|delta/i.test(recipeText));
+  const ratioItems = rankedItems.filter((item) => /%|percent|ratio|share/i.test(item.displayValue) || /%|percent|ratio|share/i.test(item.text));
 
   return {
     recipeText,
@@ -1464,9 +1701,9 @@ function buildEvidencePools({ panel, report, context }) {
     chartItems,
     narrativeItems,
     coverageItems,
-    jobItems,
-    partitionItems,
-    percentItems
+    linkageItems,
+    comparisonItems,
+    ratioItems
   };
 }
 
@@ -1477,18 +1714,18 @@ function uniqueItems(items = [], limit = 5) {
 function sectionItemsForArchetype(sectionId, pools) {
   const ranked = uniqueItems([...pools.rankedItems.map((item) => item.text), ...pools.chartItems], 5);
   const notes = uniqueItems([...pools.narrativeItems, ...pools.coverageItems], 4);
-  const jobs = uniqueItems(pools.jobItems.map((item) => item.text), 5);
-  const partition = uniqueItems(
-    [...pools.percentItems.map((item) => item.text), ...pools.partitionItems.map((item) => item.text)],
+  const linked = uniqueItems(pools.linkageItems.map((item) => item.text), 5);
+  const comparison = uniqueItems(
+    [...pools.ratioItems.map((item) => item.text), ...pools.comparisonItems.map((item) => item.text)],
     5
   );
   const scalar = uniqueItems(pools.scalarItems.map((item) => item.text), 4);
 
   switch (sectionId) {
     case "pressure-metrics":
-      return partition.length ? partition : ranked;
+      return comparison.length ? comparison : ranked;
     case "backlog-board":
-      return uniqueItems([...pools.partitionItems.map((item) => item.text), ...ranked], 5);
+      return uniqueItems([...pools.comparisonItems.map((item) => item.text), ...ranked], 5);
     case "capacity-notes":
     case "triage-summary":
     case "operator-notes":
@@ -1497,24 +1734,24 @@ function sectionItemsForArchetype(sectionId, pools) {
     case "briefing":
     case "actions":
     case "confidence-notes":
-    case "candidate-drilldowns":
+    case "follow-up-drilldowns":
     case "attribution-notes":
       return notes.length ? notes : ranked;
     case "ranked-signals":
     case "peak-metrics":
     case "evidence-matrix":
-    case "resource-profile":
+    case "behavioral-profile":
       return ranked.length ? ranked : [...scalar, ...notes];
     case "entity-links":
-    case "job-header":
-      return jobs.length ? jobs : ranked;
+    case "focus-header":
+      return linked.length ? linked : ranked;
     default:
       return ranked.length ? ranked : [...scalar, ...notes];
   }
 }
 
-function buildArchetypeDetails({ appConfig, panel, run, report, context }) {
-  const contract = buildArchetypeAnalysisContract(appConfig, run.selectedArchetype ?? "incident-summary");
+function buildArchetypeDetails({ appConfig, domain = null, panel, run, report, context }) {
+  const contract = buildArchetypeAnalysisContract(appConfig, domain, run.selectedArchetype ?? "incident-summary");
   if (!contract?.detailSections?.length) {
     return [];
   }
@@ -1546,15 +1783,15 @@ function selectHeuristicArchetype({ appConfig, domain, panel, context }) {
   const preferredArchetype = getPreferredArchetype(appConfig, domain, panel);
   const evidence = buildEvidencePools({ panel, report: { chart: { labels: [], values: [] }, highlights: [], narrative: [] }, context });
   const hasStructuredRankings = evidence.rankedItems.length >= 3;
-  const hasJobLinks = evidence.jobItems.length >= 2;
-  const hasPartitionPressure = evidence.partitionItems.length >= 2 || evidence.percentItems.length >= 2;
+  const hasEntityLinks = evidence.linkageItems.length >= 2;
+  const hasComparisonPressure = evidence.comparisonItems.length >= 2 || evidence.ratioItems.length >= 2;
   const hasLineBias = panel.chartPreference === "line";
   const focusText = (panel.analysisRecipe?.focus ?? "").toLowerCase();
 
   const scores = new Map(allowedArchetypes.map((id) => [id, id === preferredArchetype ? 2 : 0]));
-  if (scores.has("pressure-board") && hasPartitionPressure) scores.set("pressure-board", scores.get("pressure-board") + 4);
-  if (scores.has("correlation-inspector") && hasJobLinks) scores.set("correlation-inspector", scores.get("correlation-inspector") + 4);
-  if (scores.has("job-detail-sheet") && hasJobLinks) scores.set("job-detail-sheet", scores.get("job-detail-sheet") + 3);
+  if (scores.has("pressure-board") && hasComparisonPressure) scores.set("pressure-board", scores.get("pressure-board") + 4);
+  if (scores.has("correlation-inspector") && hasEntityLinks) scores.set("correlation-inspector", scores.get("correlation-inspector") + 4);
+  if (scores.has("job-detail-sheet") && hasEntityLinks) scores.set("job-detail-sheet", scores.get("job-detail-sheet") + 3);
   if (scores.has("timeline-analysis") && (hasLineBias || /trend|timeline|window|over time|history/i.test(focusText))) {
     scores.set("timeline-analysis", scores.get("timeline-analysis") + 3);
   }
@@ -1570,11 +1807,11 @@ function selectHeuristicArchetype({ appConfig, domain, panel, context }) {
   if (selectedArchetype === preferredArchetype) {
     reasonParts.push("The preferred archetype remains aligned with the configured recipe focus.");
   }
-  if (selectedArchetype === "pressure-board" && hasPartitionPressure) {
-    reasonParts.push("Recipe evidence is dominated by backlog or saturation style partition signals.");
+  if (selectedArchetype === "pressure-board" && hasComparisonPressure) {
+    reasonParts.push("Recipe evidence is dominated by comparison, saturation, or bottleneck-style signals.");
   }
-  if ((selectedArchetype === "correlation-inspector" || selectedArchetype === "job-detail-sheet") && hasJobLinks) {
-    reasonParts.push("The local evidence contains clear multi-entity job, user, partition, or host links.");
+  if ((selectedArchetype === "correlation-inspector" || selectedArchetype === "job-detail-sheet") && hasEntityLinks) {
+    reasonParts.push("The local evidence contains clear multi-entity or cohort-level links.");
   }
   if (selectedArchetype === "timeline-analysis" && hasLineBias) {
     reasonParts.push("The panel is configured for line-oriented presentation and temporal interpretation.");
@@ -1923,14 +2160,97 @@ export class AgentRuntime {
     generationToolContext
   }) {
     const toolTrace = [];
-    const compactSourceDiscovery = compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence);
     const availableToolIds = new Set(compactGenerationToolRegistryIds(generationToolRegistry));
+    const generationReasoningEffort = appConfig.agent?.domainGenerationReasoningEffort
+      ?? appConfig.agent?.reasoningEffort
+      ?? "medium";
+    const toolSelectionMode = appConfig.agent?.localTools?.domainGenerationSelectionMode ?? "deterministic";
+    const maxToolCalls = appConfig.agent?.localTools?.domainGenerationMaxToolCalls ?? 4;
     const requireToolCall = Boolean(
       appConfig.agent?.localTools?.enabled &&
       appConfig.agent?.localTools?.primaryForDomainGeneration &&
       Array.isArray(generationToolRegistry?.tools) &&
       generationToolRegistry.tools.length
     );
+    if (requireToolCall && toolSelectionMode === "deterministic") {
+      const requestedToolCalls = selectDeterministicGenerationToolCalls(generationToolRegistry, prompt, maxToolCalls);
+      const toolExecutions = requestedToolCalls.map((toolCall) => {
+        const execution = executeDomainGenerationTool(generationToolRegistry, generationToolContext, toolCall.toolId);
+        const traceEntry = {
+          toolId: execution.tool.id,
+          title: execution.tool.title,
+          scopeType: execution.tool.scopeType,
+          scopeTitle: execution.tool.scopeTitle,
+          operation: execution.tool.operation,
+          purpose: toolCall.purpose,
+          result: compactGenerationToolResultForModel(execution),
+          recordedAt: new Date().toISOString()
+        };
+        toolTrace.push(traceEntry);
+        return compactGenerationToolResultForModel(execution);
+      });
+      const generationEvidenceDigest = compactGenerationEvidenceDigest(toolExecutions);
+      this.logger.info("Domain generation tools executed deterministically", {
+        toolIds: toolTrace.map((entry) => entry.toolId),
+        toolCount: toolTrace.length
+      }, "analysis");
+
+      const finalResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: generationReasoningEffort
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: "You design configuration-only analytical domains for a web app. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: buildDomainGenerationPromptText({
+                  compactSourceMetadata,
+                  generationEvidenceDigest,
+                  appConfig,
+                  prompt
+                })
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "domain_configuration",
+            schema: domainSchema,
+            strict: true
+          }
+        }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response: finalResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "domain_generation",
+        provider: "openai-responses"
+      });
+
+      return {
+        toolMode: "deterministic",
+        toolTrace,
+        toolDecision: {
+          mode: "call_tools",
+          rationale: "Domain-generation datasource-discovery tools were selected deterministically to reduce latency while preserving grounded semantic inspection."
+        },
+        finalResponse
+      };
+    }
     const toolRequirementText = requireToolCall
       ? "You must request 1 to 4 source-discovery tool calls from the provided registry before producing the domain configuration. Do not return mode=generate on this step."
       : "If the existing discovery evidence is sufficient, you may return mode=generate with no tool calls.";
@@ -1938,7 +2258,7 @@ export class AgentRuntime {
     const initialResponse = await this.openai.responses.create({
       model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
-        effort: appConfig.agent?.reasoningEffort ?? "medium"
+        effort: generationReasoningEffort
       },
       input: [
         {
@@ -1955,7 +2275,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Decide which datasource-discovery tools, if any, should be invoked before generating the domain.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nAvailable data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nCompact datasource discovery summary:\n${JSON.stringify(compactSourceDiscovery, null, 2)}\n\nDomain-generation tool registry:\n${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry), null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nUser prompt:\n${prompt}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 4 tool calls from the registry. Choose the tools most likely to deepen semantic understanding of the datasource contents." : "If you already have enough evidence, return mode=generate with no tool calls. If you need more evidence, return mode=call_tools with up to 4 tool calls from the registry."}`
+              text: `Decide which datasource-discovery tools, if any, should be invoked before generating the domain.\n\nStable local analysis primitives: ${JSON.stringify(listDeterministicTools())}\nAvailable data source metadata: ${JSON.stringify(compactSourceMetadataForGenerationPrompt(compactSourceMetadata))}\nCompact datasource discovery summary: ${JSON.stringify(compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence))}\nDomain-generation tool registry: ${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry))}\nAvailable widget archetypes: ${JSON.stringify(compactArchetypeRegistryForGeneration(appConfig))}\nUser prompt: ${prompt}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 4 tool calls from the registry. Choose the tools most likely to deepen semantic understanding of the datasource contents." : "If you already have enough evidence, return mode=generate with no tool calls. If you need more evidence, return mode=call_tools with up to 4 tool calls from the registry."}`
             }
           ]
         }
@@ -1985,7 +2305,7 @@ export class AgentRuntime {
       const repairResponse = await this.openai.responses.create({
         model: appConfig.agent?.model ?? "gpt-5.4",
         reasoning: {
-          effort: appConfig.agent?.reasoningEffort ?? "medium"
+          effort: generationReasoningEffort
         },
         input: [
           {
@@ -2044,7 +2364,7 @@ export class AgentRuntime {
       const repairInvalidResponse = await this.openai.responses.create({
         model: appConfig.agent?.model ?? "gpt-5.4",
         reasoning: {
-          effort: appConfig.agent?.reasoningEffort ?? "medium"
+          effort: generationReasoningEffort
         },
         input: [
           {
@@ -2126,6 +2446,7 @@ export class AgentRuntime {
       toolTrace.push(traceEntry);
       return compactGenerationToolResultForModel(execution);
     });
+    const generationEvidenceDigest = compactGenerationEvidenceDigest(toolExecutions);
     this.logger.info("Domain generation tools executed", {
       toolIds: toolTrace.map((entry) => entry.toolId),
       toolCount: toolTrace.length
@@ -2134,7 +2455,7 @@ export class AgentRuntime {
     const finalResponse = await this.openai.responses.create({
       model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
-        effort: appConfig.agent?.reasoningEffort ?? "medium"
+        effort: generationReasoningEffort
       },
       input: [
         {
@@ -2151,7 +2472,12 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Available data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nCompact datasource discovery summary:\n${JSON.stringify(compactSourceDiscovery, null, 2)}\n\nDatasource-discovery tool outputs:\n${JSON.stringify(toolExecutions, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.\n\nUse the datasource-discovery tool outputs as the primary grounding for semantic understanding of the domain. Infer entities, relationships, workflows, and useful panels from that evidence when possible. Do not invent tables, columns, metric families, labels, or operational semantics that are not supported by the datasource metadata, discovery evidence, or tool outputs. Include generationEvidenceSummary as a concise explanation of which datasource contents most strongly shaped the resulting domain.`
+              text: buildDomainGenerationPromptText({
+                compactSourceMetadata,
+                generationEvidenceDigest,
+                appConfig,
+                prompt
+              })
             }
           ]
         }
@@ -2173,6 +2499,7 @@ export class AgentRuntime {
     });
 
     return {
+      toolMode: "model-directed",
       toolTrace,
       toolDecision: decision,
       finalResponse
@@ -2217,7 +2544,7 @@ export class AgentRuntime {
     const response = generationToolLoop.finalResponse ?? await this.openai.responses.create({
       model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
-        effort: appConfig.agent?.reasoningEffort ?? "medium"
+        effort: appConfig.agent?.domainGenerationReasoningEffort ?? appConfig.agent?.reasoningEffort ?? "medium"
       },
       input: [
         {
@@ -2234,7 +2561,26 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Available data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nLive datasource discovery evidence:\n${JSON.stringify(sourceDiscoveryEvidence, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.\n\nUse the live datasource discovery evidence as the primary grounding for semantic understanding of the domain. Infer entities, relationships, and relevant workflows from that evidence when possible. Do not invent metric families, labels, or operational semantics that are not supported by the datasource metadata or live evidence. Include generationEvidenceSummary as a concise explanation of which datasource contents most strongly shaped the resulting domain.`
+              text: buildDomainGenerationPromptText({
+                compactSourceMetadata,
+                generationEvidenceDigest: compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence).map((source) => ({
+                  sourceId: source.sourceId,
+                  sourceName: source.sourceName,
+                  sourceType: source.sourceType,
+                  status: source.status,
+                  issue: source.issue ?? null,
+                  details: {
+                    tableCount: source.tableCount ?? null,
+                    tables: (source.tables ?? []).slice(0, 8),
+                    sampleKeys: (source.sampleKeys ?? []).slice(0, 8),
+                    numericFields: (source.numericFields ?? []).slice(0, 8),
+                    representativeRows: (source.representativeSamples ?? []).slice(0, 2),
+                    representativeQueryResults: (source.representativeQueryResults ?? []).slice(0, 2)
+                  }
+                })),
+                appConfig,
+                prompt
+              })
             }
           ]
         }
@@ -2259,7 +2605,7 @@ export class AgentRuntime {
 
     const domain = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
     domain.generationPrompt = prompt;
-    domain.generationToolMode = generationToolLoop.toolTrace.length ? "model-directed" : "model-no-tools";
+    domain.generationToolMode = generationToolLoop.toolMode ?? (generationToolLoop.toolTrace.length ? "model-directed" : "model-no-tools");
     domain.generationToolTrace = generationToolLoop.toolTrace ?? [];
     domain.generationToolDecision = generationToolLoop.toolDecision ?? null;
     await this.configStore.saveDomain(domain);
@@ -2363,9 +2709,9 @@ export class AgentRuntime {
       panel?.preferredArchetype ??
       null;
     const selectedArchetypeDefinition = selectedArchetype
-      ? getArchetypeDefinition(appConfig, selectedArchetype)
+      ? getArchetypeDefinition(appConfig, domain, selectedArchetype)
       : null;
-    const analysisContract = buildArchetypeAnalysisContract(appConfig, selectedArchetype);
+    const analysisContract = buildArchetypeAnalysisContract(appConfig, domain, selectedArchetype);
     const compactDomainSummary = compactDomain(domain);
     const compactPanelSummary = compactPanel(panel);
     const compactContext = compactContextForPanel(panel, context);
@@ -2376,6 +2722,7 @@ export class AgentRuntime {
       analysisContract,
       buildArchetypeDetails({
         appConfig,
+        domain,
         panel,
         run: {
           ...run,
@@ -2465,6 +2812,7 @@ export class AgentRuntime {
         analysisContract,
         buildArchetypeDetails({
           appConfig,
+          domain,
           panel,
           run: {
             ...run,
@@ -3231,8 +3579,8 @@ export class AgentRuntime {
         progressMessage: "Comparing allowed presentation archetypes against current evidence."
       });
       const archetypeSelection = await this.selectArchetype({ appConfig, domain, panel, context });
-      const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, archetypeSelection.selectedArchetype);
-      const analysisContract = buildArchetypeAnalysisContract(appConfig, archetypeSelection.selectedArchetype);
+      const selectedArchetypeDefinition = getArchetypeDefinition(appConfig, domain, archetypeSelection.selectedArchetype);
+      const analysisContract = buildArchetypeAnalysisContract(appConfig, domain, archetypeSelection.selectedArchetype);
       const archetypeEntryIds = (archetypeSelection.billingEntries ?? []).map((entry) => entry.id).filter(Boolean);
       if (archetypeEntryIds.length) {
         await this.billingTracker?.attachEntriesToRun(archetypeEntryIds, run.id);
@@ -3268,7 +3616,7 @@ export class AgentRuntime {
         report.details = mergeArchetypeDetails(
           analysisContract,
           report.details,
-          buildArchetypeDetails({ appConfig, panel, run, report, context })
+          buildArchetypeDetails({ appConfig, domain, panel, run, report, context })
         );
         run = await this.persistRunUpdate(run, {
           status: "completed",
@@ -3666,14 +4014,14 @@ export class AgentRuntime {
 
     run.status = "completed";
     const currentAppConfig = await this.configStore.getAppConfig();
-    const analysisContract = buildArchetypeAnalysisContract(currentAppConfig, run.selectedArchetype);
+    const analysisContract = buildArchetypeAnalysisContract(currentAppConfig, domain, run.selectedArchetype);
     const deterministicPanelTools = run.localFindings ?? buildDeterministicPanelSummary(panel, run.context);
     const preliminaryReport = normalizeReport(parsed, panel);
     run.report = normalizeReport(
       parsed,
       panel,
       analysisContract,
-      buildArchetypeDetails({ appConfig: currentAppConfig, panel, run, report: preliminaryReport, context: run.context })
+      buildArchetypeDetails({ appConfig: currentAppConfig, domain, panel, run, report: preliminaryReport, context: run.context })
     );
     run.localFindings = deterministicPanelTools;
     run.report.findings = deterministicPanelTools.findings ?? [];

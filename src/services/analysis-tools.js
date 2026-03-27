@@ -134,7 +134,7 @@ function buildFallbackBlocksFromContext(context, limit = 3) {
         operation: result.resultType === "vector" ? "top_entries" : "scalar",
         description: "Fallback recipe generated from available source preview context.",
         queryName: result.queryName,
-        labelFields: ["instance", "partition", "jobid", "user", "card", "device"],
+        labelFields: [],
         valueField: "value",
         valueTransform: "identity",
         unit: "",
@@ -450,16 +450,26 @@ function buildDetailsFromFindings(findings) {
 function summarizeInteractionFilters(values = {}) {
   const parts = [];
 
-  if (Array.isArray(values.jobIds) && values.jobIds.length) {
-    parts.push(`${values.jobIds.length} job${values.jobIds.length === 1 ? "" : "s"}`);
-  }
+  for (const [key, value] of Object.entries(values)) {
+    if (key === "dateRange" || value === null || value === undefined || value === "") {
+      continue;
+    }
 
-  if (values.partition) {
-    parts.push(`partition ${values.partition}`);
-  }
+    const label = key
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .toLowerCase();
 
-  if (values.instance) {
-    parts.push(`host ${values.instance}`);
+    if (Array.isArray(value) && value.length) {
+      parts.push(`${value.length} ${label}${value.length === 1 ? "" : "s"}`);
+      continue;
+    }
+
+    if (typeof value === "object") {
+      continue;
+    }
+
+    parts.push(`${label} ${value}`);
   }
 
   if (values.dateRange?.start || values.dateRange?.end) {

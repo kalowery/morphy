@@ -4,6 +4,44 @@
   "description": "Historical observability domain for the HPCFund GPU cluster, combining ROCm telemetry, Slurm scheduler state, node-exporter metrics, InfiniBand health, and job-to-node correlation from March 2026.",
   "color": "#8df0c6",
   "icon": "HF",
+  "archetypes": {
+    "library": {
+      "job-detail-sheet": {
+        "id": "job-detail-sheet",
+        "title": "Job Detail Sheet",
+        "description": "HPCFund-specific workload detail layout with job attribution, accelerator behavior, and workload follow-up drilldowns.",
+        "requiredSections": [
+          "focus-header",
+          "behavioral-profile",
+          "follow-up-drilldowns"
+        ],
+        "detailSections": [
+          {
+            "id": "focus-header",
+            "title": "Focus Jobs",
+            "description": "The most relevant jobs or workload identities currently worth inspecting.",
+            "minItems": 1,
+            "maxItems": 4
+          },
+          {
+            "id": "behavioral-profile",
+            "title": "Accelerator Profile",
+            "description": "Behavior linked to the current job set, such as utilization, VRAM pressure, or occupancy.",
+            "minItems": 2,
+            "maxItems": 5
+          },
+          {
+            "id": "follow-up-drilldowns",
+            "title": "Candidate Drilldowns",
+            "description": "Specific workload follow-up questions and drilldowns for jobs, users, nodes, or partitions.",
+            "minItems": 1,
+            "maxItems": 4
+          }
+        ],
+        "layoutGuidance": "Use a dossier-like layout centered on one or a few jobs. Accelerator behavior and attribution should read like an HPC workload investigation sheet."
+      }
+    }
+  },
   "allowedArchetypes": [
     "risk-scoreboard",
     "pressure-board",

@@ -9,12 +9,15 @@
   "agent": {
     "model": "gpt-5.4",
     "reasoningEffort": "medium",
+    "domainGenerationReasoningEffort": "low",
     "allowBackground": true,
     "reuseResponseHistory": false,
     "localTools": {
       "enabled": true,
       "mode": "deterministic",
       "primaryForDomainGeneration": true,
+      "domainGenerationSelectionMode": "deterministic",
+      "domainGenerationMaxToolCalls": 3,
       "primaryForPlanning": true,
       "primaryForAnalysis": true,
       "primaryForArchetypeSelection": true
@@ -68,10 +71,6 @@
       "incident-summary": {
         "title": "Incident Summary",
         "description": "Narrative-first operational briefing layout with actions, caveats, and confidence."
-      },
-      "job-detail-sheet": {
-        "title": "Job Detail Sheet",
-        "description": "Job-centric layout with workload attribution and resource behavior."
       }
     }
   },

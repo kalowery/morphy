@@ -3,27 +3,26 @@ const BUILTIN_ARCHETYPES = {
     id: "risk-scoreboard",
     title: "Risk Scoreboard",
     description: "Ranked operational risk layout emphasizing outliers, scores, and triage order.",
-    suitedPanels: ["fleet-health", "fabric-storage", "gpu-hotspots"],
     requiredSections: ["ranked-signals", "triage-summary", "operator-notes"],
     detailSections: [
       {
         id: "ranked-signals",
         title: "Ranked Signals",
-        description: "Highest-priority entities, hosts, or signals in descending risk order.",
+        description: "Highest-priority entities or signals in descending importance order.",
         minItems: 2,
         maxItems: 5
       },
       {
         id: "triage-summary",
         title: "Triage Summary",
-        description: "Short statements describing why the top risks matter operationally.",
+        description: "Short statements describing why the top risks or outliers matter.",
         minItems: 1,
         maxItems: 4
       },
       {
         id: "operator-notes",
-        title: "Operator Notes",
-        description: "Caveats, confidence notes, or next checks the operator should keep in mind.",
+        title: "Guidance Notes",
+        description: "Caveats, confidence notes, or next checks a user should keep in mind.",
         minItems: 1,
         maxItems: 4
       }
@@ -34,28 +33,27 @@ const BUILTIN_ARCHETYPES = {
   "pressure-board": {
     id: "pressure-board",
     title: "Pressure Board",
-    description: "Partition or capacity pressure layout for queue backlog, saturation, and bottleneck comparison.",
-    suitedPanels: ["scheduler-pressure"],
+    description: "Capacity and bottleneck comparison layout for queueing, saturation, or resource pressure.",
     requiredSections: ["pressure-metrics", "backlog-board", "capacity-notes"],
     detailSections: [
       {
         id: "pressure-metrics",
         title: "Pressure Metrics",
-        description: "The highest-pressure partitions, queues, or peer entities and their current values.",
+        description: "The highest-pressure queues, cohorts, or peer entities and their current values.",
         minItems: 2,
         maxItems: 5
       },
       {
         id: "backlog-board",
-        title: "Backlog Board",
-        description: "Concrete backlog or saturation leaders that explain the current bottleneck.",
+        title: "Comparison Board",
+        description: "Concrete leaders in backlog, saturation, or comparison metrics that explain the current bottleneck.",
         minItems: 2,
         maxItems: 5
       },
       {
         id: "capacity-notes",
         title: "Capacity Notes",
-        description: "Interpretation of what is constrained and what the operator should verify next.",
+        description: "Interpretation of what is constrained and what should be verified next.",
         minItems: 1,
         maxItems: 4
       }
@@ -67,7 +65,6 @@ const BUILTIN_ARCHETYPES = {
     id: "timeline-analysis",
     title: "Timeline Analysis",
     description: "Trend-oriented layout for time-varying signals, slopes, and temporal comparisons.",
-    suitedPanels: ["gpu-hotspots", "job-explorer"],
     requiredSections: ["timeline-overview", "peak-metrics", "trend-notes"],
     detailSections: [
       {
@@ -87,7 +84,7 @@ const BUILTIN_ARCHETYPES = {
       {
         id: "trend-notes",
         title: "Trend Notes",
-        description: "Interpretation of the time pattern and what it suggests operationally.",
+        description: "Interpretation of the time pattern and what it suggests.",
         minItems: 1,
         maxItems: 4
       }
@@ -98,14 +95,13 @@ const BUILTIN_ARCHETYPES = {
   "correlation-inspector": {
     id: "correlation-inspector",
     title: "Correlation Inspector",
-    description: "Cross-linked layout for associating hosts, users, jobs, partitions, and other entities.",
-    suitedPanels: ["job-correlation", "job-explorer"],
+    description: "Cross-linked layout for associating related entities, cohorts, or signals.",
     requiredSections: ["entity-links", "evidence-matrix", "attribution-notes"],
     detailSections: [
       {
         id: "entity-links",
         title: "Entity Links",
-        description: "Direct associations among jobs, users, nodes, partitions, or devices.",
+        description: "Direct associations among important entities, cohorts, or signals.",
         minItems: 2,
         maxItems: 5
       },
@@ -131,20 +127,19 @@ const BUILTIN_ARCHETYPES = {
     id: "incident-summary",
     title: "Incident Summary",
     description: "Narrative-first operational briefing layout for actions, caveats, and confidence.",
-    suitedPanels: ["operator-brief", "fleet-health", "fabric-storage"],
     requiredSections: ["briefing", "actions", "confidence-notes"],
     detailSections: [
       {
         id: "briefing",
         title: "Briefing",
-        description: "The main operational story in concise handoff-friendly language.",
+        description: "The main story in concise handoff-friendly language.",
         minItems: 1,
         maxItems: 3
       },
       {
         id: "actions",
         title: "Actions",
-        description: "Immediate operator actions or checks recommended from the current evidence.",
+        description: "Immediate actions or checks recommended from the current evidence.",
         minItems: 1,
         maxItems: 4
       },
@@ -158,38 +153,6 @@ const BUILTIN_ARCHETYPES = {
     ],
     layoutGuidance:
       "Lead with concise briefing text and action chips. Visuals should support the handoff summary rather than dominate it."
-  },
-  "job-detail-sheet": {
-    id: "job-detail-sheet",
-    title: "Job Detail Sheet",
-    description: "Job-centric layout with workload attribution, resource behavior, and candidate drilldowns.",
-    suitedPanels: ["job-explorer", "job-correlation"],
-    requiredSections: ["job-header", "resource-profile", "candidate-drilldowns"],
-    detailSections: [
-      {
-        id: "job-header",
-        title: "Job Header",
-        description: "The most likely jobs or workload identities currently worth inspecting.",
-        minItems: 1,
-        maxItems: 4
-      },
-      {
-        id: "resource-profile",
-        title: "Resource Profile",
-        description: "Resource behavior linked to the candidate job set, such as utilization, VRAM, or occupancy.",
-        minItems: 2,
-        maxItems: 5
-      },
-      {
-        id: "candidate-drilldowns",
-        title: "Candidate Drilldowns",
-        description: "Specific follow-up drilldowns or job-level questions the operator should pursue next.",
-        minItems: 1,
-        maxItems: 4
-      }
-    ],
-    layoutGuidance:
-      "Use a dossier-like layout centered on one or a few jobs. Resource behavior and attribution should read like an investigation sheet."
   }
 };
 
@@ -197,25 +160,31 @@ function dedupe(values) {
   return values.filter((value, index) => values.indexOf(value) === index);
 }
 
-export function getArchetypeRegistry(appConfig = {}) {
+function getDomainArchetypeLibrary(domain) {
+  return domain?.archetypes?.library ?? domain?.archetypes ?? {};
+}
+
+export function getArchetypeRegistry(appConfig = {}, domain = null) {
   const configuredLibrary = appConfig.archetypes?.library ?? {};
+  const domainLibrary = getDomainArchetypeLibrary(domain);
 
   return {
     defaultArchetype: appConfig.archetypes?.defaultArchetype ?? "incident-summary",
     library: {
       ...BUILTIN_ARCHETYPES,
-      ...configuredLibrary
+      ...configuredLibrary,
+      ...domainLibrary
     }
   };
 }
 
-export function getArchetypeDefinition(appConfig = {}, archetypeId) {
-  const registry = getArchetypeRegistry(appConfig);
+export function getArchetypeDefinition(appConfig = {}, domain, archetypeId) {
+  const registry = getArchetypeRegistry(appConfig, domain);
   return registry.library[archetypeId] ?? null;
 }
 
 export function getPanelAllowedArchetypes(appConfig = {}, domain, panel) {
-  const registry = getArchetypeRegistry(appConfig);
+  const registry = getArchetypeRegistry(appConfig, domain);
   const domainAllowed = Array.isArray(domain?.allowedArchetypes)
     ? domain.allowedArchetypes.filter((id) => registry.library[id])
     : [];
@@ -230,18 +199,30 @@ export function getPanelAllowedArchetypes(appConfig = {}, domain, panel) {
   if (domainAllowed.length) {
     return dedupe(domainAllowed);
   }
+  if (panel?.interactionMode === "interactive") {
+    return dedupe(
+      [
+        "correlation-inspector",
+        "risk-scoreboard",
+        "timeline-analysis",
+        registry.defaultArchetype
+      ].filter((id) => registry.library[id])
+    );
+  }
 
-  const suited = Object.values(registry.library)
-    .filter((entry) => entry.suitedPanels?.includes(panel?.id))
-    .map((entry) => entry.id);
+  if (panel?.chartPreference === "line") {
+    return dedupe(
+      ["timeline-analysis", "risk-scoreboard", registry.defaultArchetype].filter((id) => registry.library[id])
+    );
+  }
 
-  return suited.length ? dedupe(suited) : [registry.defaultArchetype];
+  return [registry.defaultArchetype];
 }
 
 export function getPreferredArchetype(appConfig = {}, domain, panel) {
   const allowed = getPanelAllowedArchetypes(appConfig, domain, panel);
   if (!allowed.length) {
-    return getArchetypeRegistry(appConfig).defaultArchetype;
+    return getArchetypeRegistry(appConfig, domain).defaultArchetype;
   }
 
   if (panel?.preferredArchetype && allowed.includes(panel.preferredArchetype)) {
@@ -255,7 +236,7 @@ export function buildArchetypePromptBlock(appConfig = {}, domain, panel) {
   const allowed = getPanelAllowedArchetypes(appConfig, domain, panel);
   const preferred = getPreferredArchetype(appConfig, domain, panel);
   const definitions = allowed
-    .map((id) => getArchetypeDefinition(appConfig, id))
+    .map((id) => getArchetypeDefinition(appConfig, domain, id))
     .filter(Boolean);
 
   return {
@@ -266,8 +247,8 @@ export function buildArchetypePromptBlock(appConfig = {}, domain, panel) {
   };
 }
 
-export function buildArchetypeWidgetContract(appConfig = {}, archetypeId) {
-  const definition = getArchetypeDefinition(appConfig, archetypeId);
+export function buildArchetypeWidgetContract(appConfig = {}, domain, archetypeId) {
+  const definition = getArchetypeDefinition(appConfig, domain, archetypeId);
 
   if (!definition) {
     return null;
@@ -283,8 +264,8 @@ export function buildArchetypeWidgetContract(appConfig = {}, archetypeId) {
   };
 }
 
-export function buildArchetypeAnalysisContract(appConfig = {}, archetypeId) {
-  const definition = getArchetypeDefinition(appConfig, archetypeId);
+export function buildArchetypeAnalysisContract(appConfig = {}, domain, archetypeId) {
+  const definition = getArchetypeDefinition(appConfig, domain, archetypeId);
 
   if (!definition) {
     return null;
