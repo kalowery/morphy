@@ -59,5 +59,28 @@
         "pick_rate_per_hour": 205
       }
     ]
+  },
+  {
+    "id": "warehouse-kpis-duckdb",
+    "name": "Warehouse KPI Feed (DuckDB)",
+    "type": "sql",
+    "engine": "duckdb",
+    "description": "Local DuckDB sample database demonstrating the generic SQL datasource path.",
+    "databasePath": "data/samples/warehouse-kpis.duckdb",
+    "schemaQuery": "select table_schema, table_name from information_schema.tables where table_schema not in ('information_schema', 'pg_catalog') order by 1, 2 limit 50",
+    "columnsQuery": "select table_schema, table_name, column_name, data_type from information_schema.columns where table_schema not in ('information_schema', 'pg_catalog') order by 1, 2, ordinal_position limit 200",
+    "previewQuery": "select * from warehouse_kpis order by site limit 25",
+    "rowCountQuery": "select count(*) as row_count from warehouse_kpis"
+  },
+  {
+    "id": "warehouse-kpis-sqlite",
+    "name": "Warehouse KPI Feed (SQLite)",
+    "type": "sql",
+    "engine": "sqlite",
+    "description": "Local SQLite sample database demonstrating the generic SQL datasource path.",
+    "databasePath": "data/samples/warehouse-kpis.sqlite",
+    "schemaQuery": "select name as table_name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by 1 limit 50",
+    "previewQuery": "select * from warehouse_kpis order by site limit 25",
+    "rowCountQuery": "select count(*) as row_count from warehouse_kpis"
   }
 ]

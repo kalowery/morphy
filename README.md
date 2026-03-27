@@ -7,7 +7,7 @@
 
 Morphy is an experiment in **metamorphic systems**: software that can contextually modify parts of its own behavior and presentation through the use of AI while still remaining bounded, inspectable, and operable.
 
-In practice, Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, select presentation modes, and generate browser-executable visualization artifacts for individual panels.
+In practice, Morphy is a config-driven analytical web application for projecting domain-specific operator workspaces over heterogeneous data sources. The goal is to keep a stable host application while allowing an embedded server-side agent to analyze data, adapt the workspace within bounded limits, select presentation modes, and generate browser-executable visualization artifacts for individual panels. Those sources currently include VictoriaMetrics, JSON-backed files, a generic SQL datasource layer with DuckDB as the first live engine, and legacy relational sample-row stubs.
 
 The current prototype is built with Node.js and Express and is centered on a shared server-side runtime rather than per-browser ad hoc analysis. That makes it suitable for monitoring and analysis domains where multiple users should see the same current operational picture without duplicating expensive model calls.
 
@@ -249,6 +249,9 @@ This reduces duplicate model calls and keeps the application closer to a shared 
 Morphy currently supports preview adapters for:
 
 - JSON object stores / files
+- generic SQL datasources
+  - current live engines: DuckDB, SQLite
+  - additional SQL servers can plug into the same `sql` datasource type later
 - VictoriaMetrics-compatible time-series endpoints
 - relational sample-row stubs
 
@@ -444,6 +447,8 @@ That split is meant to reduce speculation when debugging missing panels, stale w
 ## Current Limitations
 
 - datasource access is still preview-oriented rather than a full query-planning system
+- generic SQL support currently has live DuckDB and SQLite connectors
+- additional SQL engines still need connector implementations behind the shared `sql` datasource type
 - relational support is still a stub
 - widget generation is improved by archetypes, but validation of archetype conformance is still weak
 - generated browser artifacts are sandboxed, but the validation and CSP story should be tightened before production use

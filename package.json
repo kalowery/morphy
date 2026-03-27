@@ -10,8 +10,8 @@
     "check": "node --check src/server.js"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.1-r.1",
     "express": "^5.1.0",
     "openai": "^6.2.0"
   }
 }
-

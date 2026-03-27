@@ -399,6 +399,12 @@ function describeSourceLocation(source) {
     return source.connectionString || "Relational source configured via sample rows or sample data";
   }
 
+  if (source.type === "sql") {
+    const engine = source.engine || source.connection?.engine || "sql";
+    const location = source.databasePath || source.connection?.databasePath || source.connectionString || source.connection?.connectionString || "SQL connection not configured";
+    return `${engine} · ${location}`;
+  }
+
   return "Source location not specified";
 }
 
@@ -424,6 +430,21 @@ function renderDomainContext() {
   const evidenceMarkup = domain.generationEvidenceSummary
     ? `<div class="domain-context-prompt">${escapeHtml(domain.generationEvidenceSummary)}</div>`
     : `<p class="hint">No explicit datasource-grounding summary is stored for this domain.</p>`;
+  const generationToolTrace = Array.isArray(domain.generationToolTrace) ? domain.generationToolTrace : [];
+  const generationToolMarkup = generationToolTrace.length
+    ? `
+      <div class="tool-registry-list">
+        ${generationToolTrace.map((entry) => `
+          <article class="tool-card">
+            <p class="section-label">${escapeHtml(entry.scopeTitle || entry.scopeType || "Source Tool")}</p>
+            <h4>${escapeHtml(entry.title || entry.toolId)}</h4>
+            <p class="source-description">${escapeHtml(entry.purpose || entry.operation || "")}</p>
+            <p class="hint">${escapeHtml(entry.result?.result?.summary || entry.result?.summary || "")}</p>
+          </article>
+        `).join("")}
+      </div>
+    `
+    : `<p class="hint">No generation tool trace is stored for this domain.</p>`;
   const sourcesMarkup = boundSources.length
     ? `
       <div class="domain-source-list">
@@ -450,6 +471,10 @@ function renderDomainContext() {
     <div class="domain-context-block">
       <p class="section-label">Grounding Summary</p>
       ${evidenceMarkup}
+    </div>
+    <div class="domain-context-block">
+      <p class="section-label">Generation Tool Trace</p>
+      ${generationToolMarkup}
     </div>
     <div class="domain-context-block">
       <p class="section-label">Configured Data Sources</p>

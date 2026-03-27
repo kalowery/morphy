@@ -188,10 +188,11 @@
             <input id="source-name" type="text" placeholder="Display name" required>
             <select id="source-type">
               <option value="json-file">JSON File</option>
+              <option value="sql">SQL</option>
               <option value="victoria-metrics">VictoriaMetrics</option>
               <option value="relational">Relational</option>
             </select>
-            <textarea id="source-config" rows="7" placeholder='{"path":"data/samples/example.json"}'></textarea>
+            <textarea id="source-config" rows="7" placeholder='{"path":"data/samples/example.json"} or {"engine":"duckdb","databasePath":"data/samples/example.duckdb","previewQuery":"select * from my_table limit 25"}'></textarea>
             <button class="primary-button" type="submit">Save Source</button>
           </form>
         </section>

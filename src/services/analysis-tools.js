@@ -604,6 +604,170 @@ export function listDeterministicTools() {
   ];
 }
 
+function discoveryToolId(sourceId, view) {
+  return `source:${sourceId}:${view}`;
+}
+
+function compactStringList(values = [], limit = 12) {
+  return values.filter(Boolean).slice(0, limit);
+}
+
+function discoveryTables(detail = {}) {
+  return (detail.schema?.tables ?? []).map((table) => ({
+    schema: table.schema ?? "main",
+    table: table.table ?? table.name ?? null
+  })).filter((entry) => entry.table);
+}
+
+function discoveryColumns(detail = {}) {
+  return (detail.schema?.columns ?? []).map((column) => ({
+    schema: column.schema ?? "main",
+    table: column.table ?? null,
+    name: column.name ?? null,
+    type: column.type ?? null
+  })).filter((entry) => entry.name);
+}
+
+function buildSourceDiscoveryTools(source, evidence) {
+  const detail = evidence?.status === "ready" ? evidence : null;
+  const tools = [
+    {
+      id: discoveryToolId(source.id, "overview"),
+      scopeType: "source",
+      scopeId: source.id,
+      scopeTitle: source.name,
+      title: `${source.name} Overview`,
+      description: `Inspect high-level readiness, type, and evidence coverage for ${source.name}.`,
+      operation: "source_overview",
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceType: source.type,
+      sourceEngine: source.engine ?? source.connection?.engine ?? null,
+      view: "overview"
+    }
+  ];
+
+  if (!detail) {
+    return tools;
+  }
+
+  tools.push({
+    id: discoveryToolId(source.id, "structure"),
+    scopeType: "source",
+    scopeId: source.id,
+    scopeTitle: source.name,
+    title: `${source.name} Structure`,
+    description: `Inspect schema, query catalog, or field structure for ${source.name}.`,
+    operation: "source_structure",
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    sourceEngine: source.engine ?? source.connection?.engine ?? null,
+    view: "structure"
+  });
+
+  tools.push({
+    id: discoveryToolId(source.id, "samples"),
+    scopeType: "source",
+    scopeId: source.id,
+    scopeTitle: source.name,
+    title: `${source.name} Samples`,
+    description: `Inspect representative sample contents for ${source.name}.`,
+    operation: "source_samples",
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    sourceEngine: source.engine ?? source.connection?.engine ?? null,
+    view: "samples"
+  });
+
+  return tools;
+}
+
+function executeSourceDiscoveryToolDescriptor(tool, sourceDiscoveryContext) {
+  const evidence = sourceDiscoveryContext?.evidenceBySourceId?.[tool.sourceId] ?? null;
+  const detail = evidence?.status === "ready" ? evidence : null;
+
+  if (tool.view === "overview") {
+    return {
+      kind: "source_overview",
+      title: tool.title,
+      sourceId: tool.sourceId,
+      sourceName: tool.sourceName,
+      sourceType: tool.sourceType,
+      engine: tool.sourceEngine ?? null,
+      status: evidence?.status ?? "unknown",
+      summary: detail
+        ? `${tool.sourceName} is a ready ${tool.sourceType}${tool.sourceEngine ? ` (${tool.sourceEngine})` : ""} source.`
+        : `${tool.sourceName} is not currently ready: ${evidence?.issue ?? "preview unavailable"}`,
+      details: detail
+        ? {
+            description: evidence.description ?? "",
+            rowCount: detail.rowCount ?? null,
+            previewQueries: compactStringList(detail.previewQueries ?? []),
+            queryWindow: detail.window ?? null,
+            tableCount: detail.schema?.tableCount ?? null,
+            sampleKeys: compactStringList(detail.sampleKeys ?? []),
+            numericFields: compactStringList(detail.numericFields ?? [])
+          }
+        : {
+            issue: evidence?.issue ?? "preview unavailable"
+          }
+    };
+  }
+
+  if (!detail) {
+    return {
+      kind: "source_unavailable",
+      title: tool.title,
+      sourceId: tool.sourceId,
+      summary: `${tool.sourceName} is unavailable for ${tool.view} inspection.`,
+      details: {
+        issue: evidence?.issue ?? "preview unavailable"
+      }
+    };
+  }
+
+  if (tool.view === "structure") {
+    return {
+      kind: "source_structure",
+      title: tool.title,
+      sourceId: tool.sourceId,
+      sourceName: tool.sourceName,
+      sourceType: tool.sourceType,
+      engine: tool.sourceEngine ?? null,
+      summary: `Structure view for ${tool.sourceName}.`,
+      details: {
+        previewQueries: compactStringList(detail.previewQueries ?? []),
+        queryCatalog: (detail.queryCatalog ?? []).slice(0, 12),
+        labelKeys: compactStringList(
+          (detail.queryResults ?? []).flatMap((result) => result.labelKeys ?? [])
+        ),
+        tables: discoveryTables(detail).slice(0, 12),
+        columns: discoveryColumns(detail).slice(0, 20),
+        sampleKeys: compactStringList(detail.sampleKeys ?? []),
+        numericFields: compactStringList(detail.numericFields ?? [])
+      }
+    };
+  }
+
+  return {
+    kind: "source_samples",
+    title: tool.title,
+    sourceId: tool.sourceId,
+    sourceName: tool.sourceName,
+    sourceType: tool.sourceType,
+    engine: tool.sourceEngine ?? null,
+    summary: `Sample content view for ${tool.sourceName}.`,
+    details: {
+      queryResults: (detail.queryResults ?? []).slice(0, 6),
+      sampleRows: (detail.sampleRows ?? []).slice(0, 6),
+      rowCount: detail.rowCount ?? null,
+      representativeRows: (detail.sampleRows ?? detail.sample ?? []).slice(0, 6)
+    }
+  };
+}
+
 function recipeToolsForScope(scopeType, scopeId, scopeTitle, recipe) {
   const normalized = normalizeRecipe(recipe, scopeTitle);
   return normalized.blocks.map((block) => {
@@ -665,6 +829,20 @@ export function buildDomainToolRegistry(domain) {
   };
 }
 
+export function buildDomainGenerationToolRegistry(dataSources, sourceDiscoveryEvidence) {
+  const evidenceBySourceId = Object.fromEntries(
+    (sourceDiscoveryEvidence ?? []).map((evidence) => [evidence.sourceId, evidence])
+  );
+  const tools = (dataSources ?? []).flatMap((source) =>
+    buildSourceDiscoveryTools(source, evidenceBySourceId[source.id] ?? null)
+  );
+
+  return {
+    toolCount: tools.length,
+    tools
+  };
+}
+
 export function buildPanelToolRegistry(domain, panel) {
   const domainRegistry = buildDomainToolRegistry(domain);
   return {
@@ -695,6 +873,29 @@ export function executeDerivedTool(toolRegistry, context, toolId) {
       focus: tool.focus ?? ""
     },
     result: executeToolDescriptor(tool, context)
+  };
+}
+
+export function executeDomainGenerationTool(toolRegistry, sourceDiscoveryContext, toolId) {
+  const tool = (toolRegistry?.tools ?? []).find((entry) => entry.id === toolId);
+
+  if (!tool) {
+    throw new Error(`Unknown domain-generation tool: ${toolId}`);
+  }
+
+  return {
+    tool: {
+      id: tool.id,
+      scopeType: tool.scopeType,
+      scopeId: tool.scopeId,
+      scopeTitle: tool.scopeTitle,
+      title: tool.title,
+      description: tool.description,
+      operation: tool.operation,
+      sourceType: tool.sourceType,
+      sourceEngine: tool.sourceEngine ?? null
+    },
+    result: executeSourceDiscoveryToolDescriptor(tool, sourceDiscoveryContext)
   };
 }
 

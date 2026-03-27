@@ -4,8 +4,10 @@ import { gatherDomainContext, previewSource } from "./data-sources.js";
 import {
   buildDeterministicDomainSummary,
   buildDeterministicPanelSummary,
+  buildDomainGenerationToolRegistry,
   buildDomainToolRegistry,
   buildPanelToolRegistry,
+  executeDomainGenerationTool,
   executeDerivedTool,
   getRelevantQueryNamesFromRecipe,
   listDeterministicTools
@@ -22,15 +24,15 @@ import {
 const domainSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "name", "description", "color", "icon", "allowedArchetypes", "dataSources", "analysisRecipe", "panels"],
+  required: ["id", "name", "description", "color", "icon", "generationPrompt", "generationEvidenceSummary", "allowedArchetypes", "dataSources", "analysisRecipe", "panels"],
   properties: {
     id: { type: "string" },
     name: { type: "string" },
     description: { type: "string" },
     color: { type: "string" },
     icon: { type: "string" },
-    generationPrompt: { type: "string" },
-    generationEvidenceSummary: { type: "string" },
+    generationPrompt: { type: ["string", "null"] },
+    generationEvidenceSummary: { type: ["string", "null"] },
     allowedArchetypes: {
       type: "array",
       items: { type: "string" }
@@ -50,7 +52,7 @@ const domainSchema = {
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["id", "title", "operation"],
+            required: ["id", "title", "operation", "description", "queryName", "queryNames", "labelFields", "valueField", "valueTransform", "unit", "decimals", "limit", "sort"],
             properties: {
               id: { type: "string" },
               title: { type: "string" },
@@ -58,8 +60,8 @@ const domainSchema = {
                 type: "string",
                 enum: ["scalar", "top_entries"]
               },
-              description: { type: "string" },
-              queryName: { type: "string" },
+              description: { type: ["string", "null"] },
+              queryName: { type: ["string", "null"] },
               queryNames: {
                 type: "array",
                 items: { type: "string" }
@@ -68,17 +70,17 @@ const domainSchema = {
                 type: "array",
                 items: { type: "string" }
               },
-              valueField: { type: "string" },
+              valueField: { type: ["string", "null"] },
               valueTransform: {
-                type: "string",
-                enum: ["identity", "percent"]
+                type: ["string", "null"],
+                enum: ["identity", "percent", null]
               },
-              unit: { type: "string" },
-              decimals: { type: "integer" },
-              limit: { type: "integer" },
+              unit: { type: ["string", "null"] },
+              decimals: { type: ["integer", "null"] },
+              limit: { type: ["integer", "null"] },
               sort: {
-                type: "string",
-                enum: ["asc", "desc"]
+                type: ["string", "null"],
+                enum: ["asc", "desc", null]
               }
             }
           }
@@ -99,7 +101,9 @@ const domainSchema = {
           "allowedArchetypes",
           "preferredArchetype",
           "archetypeGuidance",
-          "analysisRecipe"
+          "analysisRecipe",
+          "interactionMode",
+          "interactionContract"
         ],
         properties: {
           id: { type: "string" },
@@ -124,7 +128,7 @@ const domainSchema = {
                 items: {
                   type: "object",
                   additionalProperties: false,
-                  required: ["id", "title", "operation"],
+                  required: ["id", "title", "operation", "description", "queryName", "queryNames", "labelFields", "valueField", "valueTransform", "unit", "decimals", "limit", "sort"],
                   properties: {
                     id: { type: "string" },
                     title: { type: "string" },
@@ -132,8 +136,8 @@ const domainSchema = {
                       type: "string",
                       enum: ["scalar", "top_entries"]
                     },
-                    description: { type: "string" },
-                    queryName: { type: "string" },
+                    description: { type: ["string", "null"] },
+                    queryName: { type: ["string", "null"] },
                     queryNames: {
                       type: "array",
                       items: { type: "string" }
@@ -142,17 +146,17 @@ const domainSchema = {
                       type: "array",
                       items: { type: "string" }
                     },
-                    valueField: { type: "string" },
+                    valueField: { type: ["string", "null"] },
                     valueTransform: {
-                      type: "string",
-                      enum: ["identity", "percent"]
+                      type: ["string", "null"],
+                      enum: ["identity", "percent", null]
                     },
-                    unit: { type: "string" },
-                    decimals: { type: "integer" },
-                    limit: { type: "integer" },
+                    unit: { type: ["string", "null"] },
+                    decimals: { type: ["integer", "null"] },
+                    limit: { type: ["integer", "null"] },
                     sort: {
-                      type: "string",
-                      enum: ["asc", "desc"]
+                      type: ["string", "null"],
+                      enum: ["asc", "desc", null]
                     }
                   }
                 }
@@ -160,46 +164,46 @@ const domainSchema = {
             }
           },
           interactionMode: {
-            type: "string",
-            enum: ["report", "interactive", "hybrid"]
+            type: ["string", "null"],
+            enum: ["report", "interactive", "hybrid", null]
           },
           interactionContract: {
-            type: "object",
+            type: ["object", "null"],
             additionalProperties: false,
-            required: ["controls"],
+            required: ["summary", "controls"],
             properties: {
-              summary: { type: "string" },
+              summary: { type: ["string", "null"] },
               controls: {
                 type: "array",
                 items: {
                   type: "object",
                   additionalProperties: false,
-                  required: ["id", "label", "type", "parameter", "source"],
+                  required: ["id", "label", "description", "type", "parameter", "source", "queryName", "field", "displayFields", "maxOptions", "multiple", "required", "defaultStrategy"],
                   properties: {
                     id: { type: "string" },
                     label: { type: "string" },
-                    description: { type: "string" },
+                    description: { type: ["string", "null"] },
                     type: {
-                      type: "string",
-                      enum: ["single_select", "multi_select", "search", "date_range"]
+                      type: ["string", "null"],
+                      enum: ["single_select", "multi_select", "search", "date_range", null]
                     },
                     parameter: { type: "string" },
                     source: {
-                      type: "string",
-                      enum: ["label_values", "query_window"]
+                      type: ["string", "null"],
+                      enum: ["label_values", "query_window", null]
                     },
-                    queryName: { type: "string" },
-                    field: { type: "string" },
+                    queryName: { type: ["string", "null"] },
+                    field: { type: ["string", "null"] },
                     displayFields: {
                       type: "array",
                       items: { type: "string" }
                     },
-                    maxOptions: { type: "integer" },
-                    multiple: { type: "boolean" },
-                    required: { type: "boolean" },
+                    maxOptions: { type: ["integer", "null"] },
+                    multiple: { type: ["boolean", "null"] },
+                    required: { type: ["boolean", "null"] },
                     defaultStrategy: {
-                      type: "string",
-                      enum: ["none", "top", "all"]
+                      type: ["string", "null"],
+                      enum: ["none", "top", "all", null]
                     }
                   }
                 }
@@ -405,6 +409,31 @@ const analysisToolRequestSchema = {
   }
 };
 
+const generationToolRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "rationale", "toolCalls"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["generate", "call_tools"]
+    },
+    rationale: { type: "string" },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["toolId", "purpose"],
+        properties: {
+          toolId: { type: "string" },
+          purpose: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
 function slugify(value) {
   return value
     .toLowerCase()
@@ -571,6 +600,40 @@ function compactToolResultForModel(execution) {
   };
 }
 
+function compactGenerationToolRegistry(toolRegistry, limit = 16) {
+  return {
+    toolCount: toolRegistry?.toolCount ?? 0,
+    tools: (toolRegistry?.tools ?? []).slice(0, limit).map((tool) => ({
+      id: tool.id,
+      scopeType: tool.scopeType,
+      scopeTitle: tool.scopeTitle,
+      title: tool.title,
+      description: tool.description,
+      operation: tool.operation,
+      sourceType: tool.sourceType,
+      sourceEngine: tool.sourceEngine ?? null,
+      view: tool.view ?? null
+    }))
+  };
+}
+
+function compactGenerationToolRegistryIds(toolRegistry) {
+  return (toolRegistry?.tools ?? []).map((tool) => tool.id);
+}
+
+function compactGenerationToolResultForModel(execution) {
+  const result = execution?.result ?? {};
+  return {
+    tool: execution?.tool ?? null,
+    result: {
+      kind: result.kind ?? null,
+      title: result.title ?? null,
+      summary: result.summary ?? null,
+      details: result.details ?? null
+    }
+  };
+}
+
 function formatMetricLabels(metric = {}) {
   const keys = ["instance", "partition", "jobid", "user", "card", "device"];
   const values = keys
@@ -618,6 +681,24 @@ function compactSourceMetadataForGeneration(source) {
       type: source.type,
       description: source.description ?? "",
       path: source.path ?? null
+    };
+  }
+
+  if (source.type === "sql") {
+    return {
+      id: source.id,
+      name: source.name,
+      type: source.type,
+      engine: source.engine ?? source.connection?.engine ?? null,
+      description: source.description ?? "",
+      connection: {
+        databasePath: source.databasePath ?? source.connection?.databasePath ?? null,
+        connectionString: source.connectionString ?? source.connection?.connectionString ?? null
+      },
+      previewQuery: source.previewQuery ?? null,
+      schemaQuery: source.schemaQuery ?? null,
+      columnsQuery: source.columnsQuery ?? null,
+      rowCountQuery: source.rowCountQuery ?? null
     };
   }
 
@@ -797,6 +878,29 @@ function compactPreviewForGeneration(source, preview) {
     };
   }
 
+  if (source.type === "sql") {
+    const detail = preview.detail ?? {};
+    const sampleRows = Array.isArray(detail.sample) ? detail.sample : [];
+    const sampleKeys = collectTopKeys(sampleRows, 8);
+    const numericFields = Object.keys(detail.metrics ?? {}).slice(0, 8);
+    const schema = detail.schema ?? {};
+
+    return {
+      ...base,
+      engine: detail.engine ?? source.engine ?? source.connection?.engine ?? null,
+      connection: detail.connection ?? null,
+      rowCount: detail.rowCount ?? 0,
+      sampleKeys,
+      numericFields,
+      sampleRows: sampleRows.slice(0, 3),
+      schema: {
+        tableCount: schema.tableCount ?? 0,
+        tables: (schema.tables ?? []).slice(0, 8),
+        columns: (schema.columns ?? []).slice(0, 12)
+      }
+    };
+  }
+
   if (source.type === "json-file" || source.type === "relational") {
     const detail = preview.detail ?? {};
     const sampleRows = Array.isArray(detail.sample) ? detail.sample : [];
@@ -910,6 +1014,24 @@ function compactInteractionEvidence(interaction) {
       }))
     }))
   };
+}
+
+function compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence = []) {
+  return sourceDiscoveryEvidence.map((source) => ({
+    sourceId: source.sourceId,
+    sourceName: source.sourceName,
+    sourceType: source.sourceType,
+    status: source.status,
+    issue: source.issue ?? null,
+    window: source.window ?? null,
+    previewQueries: (source.previewQueries ?? []).slice(0, 8),
+    tableCount: source.schema?.tableCount ?? 0,
+    tables: (source.schema?.tables ?? []).slice(0, 8),
+    sampleKeys: (source.sampleKeys ?? []).slice(0, 8),
+    numericFields: (source.numericFields ?? []).slice(0, 8),
+    representativeSamples: (source.sampleRows ?? []).slice(0, 2),
+    representativeQueryResults: (source.queryResults ?? []).slice(0, 3)
+  }));
 }
 
 function extractJson(text) {
@@ -1792,6 +1914,271 @@ export class AgentRuntime {
     };
   }
 
+  async runGenerationToolLoop({
+    appConfig,
+    prompt,
+    compactSourceMetadata,
+    sourceDiscoveryEvidence,
+    generationToolRegistry,
+    generationToolContext
+  }) {
+    const toolTrace = [];
+    const compactSourceDiscovery = compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence);
+    const availableToolIds = new Set(compactGenerationToolRegistryIds(generationToolRegistry));
+    const requireToolCall = Boolean(
+      appConfig.agent?.localTools?.enabled &&
+      appConfig.agent?.localTools?.primaryForDomainGeneration &&
+      Array.isArray(generationToolRegistry?.tools) &&
+      generationToolRegistry.tools.length
+    );
+    const toolRequirementText = requireToolCall
+      ? "You must request 1 to 4 source-discovery tool calls from the provided registry before producing the domain configuration. Do not return mode=generate on this step."
+      : "If the existing discovery evidence is sufficient, you may return mode=generate with no tool calls.";
+
+    const initialResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `You design configuration-only analytical domains for a web app. ${toolRequirementText} Return strict JSON only.`
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Decide which datasource-discovery tools, if any, should be invoked before generating the domain.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nAvailable data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nCompact datasource discovery summary:\n${JSON.stringify(compactSourceDiscovery, null, 2)}\n\nDomain-generation tool registry:\n${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry), null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nUser prompt:\n${prompt}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 4 tool calls from the registry. Choose the tools most likely to deepen semantic understanding of the datasource contents." : "If you already have enough evidence, return mode=generate with no tool calls. If you need more evidence, return mode=call_tools with up to 4 tool calls from the registry."}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "domain_generation_tool_request",
+          schema: generationToolRequestSchema,
+          strict: true
+        }
+      }
+    });
+    await this.billingTracker?.recordResponseUsage({
+      response: initialResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "domain_generation",
+      provider: "openai-responses"
+    });
+    let decision = initialResponse.output_text
+      ? JSON.parse(initialResponse.output_text)
+      : extractJson(JSON.stringify(initialResponse.output));
+
+    let requestedToolCalls = Array.isArray(decision.toolCalls) ? decision.toolCalls : [];
+
+    if (requireToolCall && decision.mode !== "call_tools") {
+      const repairResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: "You must request source-discovery tools before a final domain configuration can be produced. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous response did not request tools, but this domain-generation mode requires tool invocation. Return mode=call_tools with 1 to 4 tool calls from this registry.\n\nDomain-generation tool registry:\n${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry), null, 2)}\n\nUser prompt:\n${prompt}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "domain_generation_tool_request_repair",
+            schema: generationToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response: repairResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "domain_generation",
+        provider: "openai-responses"
+      });
+      decision = repairResponse.output_text
+        ? JSON.parse(repairResponse.output_text)
+        : extractJson(JSON.stringify(repairResponse.output));
+      requestedToolCalls = Array.isArray(decision.toolCalls) ? decision.toolCalls : [];
+    }
+
+    if (decision.mode !== "call_tools" || !requestedToolCalls.length) {
+      return {
+        toolTrace,
+        toolDecision: decision,
+        finalResponse: null
+      };
+    }
+
+    const invalidToolIds = requestedToolCalls
+      .map((toolCall) => toolCall?.toolId)
+      .filter((toolId) => toolId && !availableToolIds.has(toolId));
+
+    if (invalidToolIds.length) {
+      const repairInvalidResponse = await this.openai.responses.create({
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        reasoning: {
+          effort: appConfig.agent?.reasoningEffort ?? "medium"
+        },
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: "You must request only tool ids that appear in the provided registry. Return strict JSON only."
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `The previous tool request included invalid tool ids: ${invalidToolIds.join(", ")}.\n\nReturn mode=call_tools with 1 to 4 tool calls using only these valid tools:\n${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry), null, 2)}`
+              }
+            ]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "domain_generation_tool_request_registry_repair",
+            schema: generationToolRequestSchema,
+            strict: true
+          }
+        }
+      });
+      await this.billingTracker?.recordResponseUsage({
+        response: repairInvalidResponse,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "domain_generation",
+        provider: "openai-responses"
+      });
+      const repairedInvalidDecision = repairInvalidResponse.output_text
+        ? JSON.parse(repairInvalidResponse.output_text)
+        : extractJson(JSON.stringify(repairInvalidResponse.output));
+      if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
+        requestedToolCalls = repairedInvalidDecision.toolCalls;
+      }
+    }
+
+    const uniqueToolCalls = [];
+    const seen = new Set();
+    for (const toolCall of requestedToolCalls.slice(0, 4)) {
+      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+        continue;
+      }
+      seen.add(toolCall.toolId);
+      uniqueToolCalls.push(toolCall);
+    }
+
+    if (!uniqueToolCalls.length) {
+      return {
+        toolTrace,
+        toolDecision: {
+          ...decision,
+          mode: "generate",
+          rationale: `${decision.rationale} No valid datasource-discovery tool ids were returned after validation.`
+        },
+        finalResponse: null
+      };
+    }
+
+    const toolExecutions = uniqueToolCalls.map((toolCall) => {
+      const execution = executeDomainGenerationTool(generationToolRegistry, generationToolContext, toolCall.toolId);
+      const traceEntry = {
+        toolId: execution.tool.id,
+        title: execution.tool.title,
+        scopeType: execution.tool.scopeType,
+        scopeTitle: execution.tool.scopeTitle,
+        operation: execution.tool.operation,
+        purpose: toolCall.purpose,
+        result: compactGenerationToolResultForModel(execution),
+        recordedAt: new Date().toISOString()
+      };
+      toolTrace.push(traceEntry);
+      return compactGenerationToolResultForModel(execution);
+    });
+    this.logger.info("Domain generation tools executed", {
+      toolIds: toolTrace.map((entry) => entry.toolId),
+      toolCount: toolTrace.length
+    }, "analysis");
+
+    const finalResponse = await this.openai.responses.create({
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      reasoning: {
+        effort: appConfig.agent?.reasoningEffort ?? "medium"
+      },
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: "You design configuration-only analytical domains for a web app. Return strict JSON only."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Available data source metadata:\n${JSON.stringify(compactSourceMetadata, null, 2)}\n\nCompact datasource discovery summary:\n${JSON.stringify(compactSourceDiscovery, null, 2)}\n\nDatasource-discovery tool outputs:\n${JSON.stringify(toolExecutions, null, 2)}\n\nAvailable widget archetypes:\n${JSON.stringify(getArchetypeRegistry(appConfig), null, 2)}\n\nCreate a domain configuration from this prompt:\n${prompt}\n\nMorphy is a metamorphic system, so generate a domain-level analysisRecipe and a panel-level analysisRecipe for every panel. Recipes must describe how deterministic local tools should summarize data using only scalar or top_entries blocks. Every panel must also declare allowedArchetypes, preferredArchetype, and archetypeGuidance. Choose only archetype ids from the available registry. The domain-level allowedArchetypes should be the union of archetypes that make sense for the domain.\n\nUse the datasource-discovery tool outputs as the primary grounding for semantic understanding of the domain. Infer entities, relationships, workflows, and useful panels from that evidence when possible. Do not invent tables, columns, metric families, labels, or operational semantics that are not supported by the datasource metadata, discovery evidence, or tool outputs. Include generationEvidenceSummary as a concise explanation of which datasource contents most strongly shaped the resulting domain.`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "domain_configuration",
+          schema: domainSchema,
+          strict: true
+        }
+      }
+    });
+    await this.billingTracker?.recordResponseUsage({
+      response: finalResponse,
+      model: appConfig.agent?.model ?? "gpt-5.4",
+      operation: "domain_generation",
+      provider: "openai-responses"
+    });
+
+    return {
+      toolTrace,
+      toolDecision: decision,
+      finalResponse
+    };
+  }
+
   async generateDomain(prompt) {
     const dataSources = await this.configStore.getDataSources();
     const appConfig = await this.configStore.getAppConfig();
@@ -1814,7 +2201,20 @@ export class AgentRuntime {
       return domain;
     }
 
-    const response = await this.openai.responses.create({
+    const generationToolRegistry = buildDomainGenerationToolRegistry(dataSources, sourceDiscoveryEvidence);
+    const generationToolContext = {
+      evidenceBySourceId: Object.fromEntries(sourceDiscoveryEvidence.map((evidence) => [evidence.sourceId, evidence]))
+    };
+    const generationToolLoop = await this.runGenerationToolLoop({
+      appConfig,
+      prompt,
+      compactSourceMetadata,
+      sourceDiscoveryEvidence,
+      generationToolRegistry,
+      generationToolContext
+    });
+
+    const response = generationToolLoop.finalResponse ?? await this.openai.responses.create({
       model: appConfig.agent?.model ?? "gpt-5.4",
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
@@ -1848,15 +2248,20 @@ export class AgentRuntime {
         }
       }
     });
-    await this.billingTracker?.recordResponseUsage({
-      response,
-      model: appConfig.agent?.model ?? "gpt-5.4",
-      operation: "domain_generation",
-      provider: "openai-responses"
-    });
+    if (!generationToolLoop.finalResponse) {
+      await this.billingTracker?.recordResponseUsage({
+        response,
+        model: appConfig.agent?.model ?? "gpt-5.4",
+        operation: "domain_generation",
+        provider: "openai-responses"
+      });
+    }
 
     const domain = response.output_text ? JSON.parse(response.output_text) : extractJson(JSON.stringify(response.output));
     domain.generationPrompt = prompt;
+    domain.generationToolMode = generationToolLoop.toolTrace.length ? "model-directed" : "model-no-tools";
+    domain.generationToolTrace = generationToolLoop.toolTrace ?? [];
+    domain.generationToolDecision = generationToolLoop.toolDecision ?? null;
     await this.configStore.saveDomain(domain);
     this.logger.info("Generated domain with OpenAI", {
       domainId: domain.id,
