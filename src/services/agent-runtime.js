@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import OpenAI from "openai";
 import { gatherDomainContext, previewSource } from "./data-sources.js";
 import {
   buildDeterministicDomainSummary,
@@ -676,6 +675,64 @@ function compactGenerationToolRegistry(toolRegistry, limit = 16) {
 
 function compactGenerationToolRegistryIds(toolRegistry) {
   return (toolRegistry?.tools ?? []).map((tool) => tool.id);
+}
+
+function fallbackPurposeText(scopeLabel = "analysis") {
+  return `Deterministic fallback selected valid ${scopeLabel} tools after the model returned no usable tool ids.`;
+}
+
+function salvageRequestedToolCalls(requestedToolCalls = [], availableToolIds = new Set(), fallbackToolIds = [], maxToolCalls = 3, scopeLabel = "analysis") {
+  const invalidToolIds = requestedToolCalls
+    .map((toolCall) => toolCall?.toolId)
+    .filter((toolId) => toolId && !availableToolIds.has(toolId));
+  const validToolCalls = [];
+  const seen = new Set();
+
+  for (const toolCall of requestedToolCalls) {
+    if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+      continue;
+    }
+
+    seen.add(toolCall.toolId);
+    validToolCalls.push(toolCall);
+
+    if (validToolCalls.length >= maxToolCalls) {
+      break;
+    }
+  }
+
+  if (validToolCalls.length) {
+    return {
+      toolCalls: validToolCalls,
+      invalidToolIds,
+      salvaged: invalidToolIds.length > 0,
+      usedFallbackDefaults: false
+    };
+  }
+
+  const fallbackCalls = [];
+  for (const toolId of fallbackToolIds) {
+    if (!toolId || seen.has(toolId) || !availableToolIds.has(toolId)) {
+      continue;
+    }
+
+    seen.add(toolId);
+    fallbackCalls.push({
+      toolId,
+      purpose: fallbackPurposeText(scopeLabel)
+    });
+
+    if (fallbackCalls.length >= maxToolCalls) {
+      break;
+    }
+  }
+
+  return {
+    toolCalls: fallbackCalls,
+    invalidToolIds,
+    salvaged: fallbackCalls.length > 0 || invalidToolIds.length > 0,
+    usedFallbackDefaults: fallbackCalls.length > 0
+  };
 }
 
 function tokenizePromptForGeneration(prompt = "") {
@@ -1835,7 +1892,7 @@ function isInProgress(run) {
 }
 
 export class AgentRuntime {
-  constructor({ configStore, eventBus, widgetService, logger, billingTracker = null }) {
+  constructor({ configStore, eventBus, widgetService, logger, billingTracker = null, aiRuntime = null }) {
     this.configStore = configStore;
     this.eventBus = eventBus;
     this.widgetService = widgetService;
@@ -1848,7 +1905,19 @@ export class AgentRuntime {
     };
     this.billingTracker = billingTracker;
     this.activeWidgetGenerations = new Map();
-    this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+    this.aiRuntime = aiRuntime ?? {
+      client: null,
+      mode: "fallback",
+      billingProvider: "local-fallback",
+      model: null
+    };
+    this.openai = this.aiRuntime.client;
+    this.aiProviderMode = this.aiRuntime.mode ?? "fallback";
+    this.aiProviderLabel = this.aiRuntime.billingProvider ?? "local-fallback";
+  }
+
+  resolveAgentModel(appConfig) {
+    return this.aiRuntime.model ?? appConfig.agent?.model ?? "gpt-5.4";
   }
 
   async runPlannerToolLoop({
@@ -1861,6 +1930,7 @@ export class AgentRuntime {
     reason,
     preferredPanelId
   }) {
+    const model = this.resolveAgentModel(appConfig);
     const toolTrace = [];
     const availableToolIds = new Set(compactToolRegistryIds(plannerToolRegistry));
     const requireToolCall = Boolean(
@@ -1873,7 +1943,7 @@ export class AgentRuntime {
       ? "You must request 1 to 3 derived tool calls from the provided registry before a final workspace plan can be produced. Do not return mode=plan on this step."
       : "If the existing evidence is sufficient, you may return mode=plan with no tool calls.";
     const initialResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -1893,7 +1963,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Decide which derived tools, if any, should be invoked before producing a workspace plan.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nDomain-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(plannerToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen panel prioritization or focus." : "If you already have enough evidence, return mode=plan with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
+              text: `Decide which derived tools, if any, should be invoked before producing a workspace plan.\n\nOnly the tool ids in the registry below are callable. Do not invent primitive ids or generic tool names.\n\nDomain-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(plannerToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(plannerDomain, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(plannerContext, null, 2)}\n\nRecent run summary:\n${JSON.stringify(plannerRuns, null, 2)}\n\nPlanning reason: ${reason}\nPreferred panel: ${preferredPanelId ?? "none"}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen panel prioritization or focus." : "If you already have enough evidence, return mode=plan with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
             }
           ]
         }
@@ -1909,9 +1979,9 @@ export class AgentRuntime {
     });
     await this.billingTracker?.recordResponseUsage({
       response: initialResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "workspace_planning",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id
     });
 
@@ -1925,9 +1995,30 @@ export class AgentRuntime {
       required: requireToolCall
     }, "planner");
 
-    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+    let requestedToolCalls = Array.isArray(decision.toolCalls) ? [...decision.toolCalls] : [];
+    let salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(plannerToolRegistry),
+      3,
+      "planner"
+    );
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length) && salvagedRequest.toolCalls.length) {
+      requestedToolCalls = salvagedRequest.toolCalls;
+      decision.mode = "call_tools";
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("planner")}`.trim();
+      decision.toolCalls = requestedToolCalls;
+      this.logger.info("Planner tool request salvaged locally", {
+        domainId: domain.id,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "planner");
+    }
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length)) {
       const repairResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -1963,9 +2054,9 @@ export class AgentRuntime {
       });
       await this.billingTracker?.recordResponseUsage({
         response: repairResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "workspace_planning",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id
       });
       const repairedDecision = repairResponse.output_text
@@ -1975,6 +2066,7 @@ export class AgentRuntime {
         decision.mode = repairedDecision.mode;
         decision.rationale = repairedDecision.rationale;
         decision.toolCalls = repairedDecision.toolCalls;
+        requestedToolCalls = [...repairedDecision.toolCalls];
         this.logger.info("Planner tool decision repaired", {
           domainId: domain.id,
           mode: decision.mode,
@@ -1983,7 +2075,7 @@ export class AgentRuntime {
       }
     }
 
-    if (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length) {
+    if (decision.mode !== "call_tools" || !requestedToolCalls.length) {
       return {
         toolTrace,
         toolDecision: decision,
@@ -1991,17 +2083,34 @@ export class AgentRuntime {
       };
     }
 
-    let requestedToolCalls = [...(decision.toolCalls ?? [])];
-    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
-      const invalidToolIds = requestedToolCalls
-        .map((toolCall) => toolCall?.toolId)
-        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+    salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(plannerToolRegistry),
+      3,
+      "planner"
+    );
+    requestedToolCalls = salvagedRequest.toolCalls;
+
+    if (salvagedRequest.invalidToolIds.length && requestedToolCalls.length) {
+      this.logger.info("Planner invalid tool ids salvaged locally", {
+        domainId: domain.id,
+        invalidToolIds: salvagedRequest.invalidToolIds,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "planner");
+      decision.toolCalls = requestedToolCalls;
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("planner")}`.trim();
+    }
+
+    if (salvagedRequest.invalidToolIds.length && !requestedToolCalls.length) {
+      const invalidToolIds = salvagedRequest.invalidToolIds;
       this.logger.info("Planner requested invalid tool ids", {
         domainId: domain.id,
         invalidToolIds
       }, "planner");
       const repairInvalidResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -2037,16 +2146,22 @@ export class AgentRuntime {
       });
       await this.billingTracker?.recordResponseUsage({
         response: repairInvalidResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "workspace_planning",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id
       });
       const repairedInvalidDecision = repairInvalidResponse.output_text
         ? JSON.parse(repairInvalidResponse.output_text)
         : extractJson(JSON.stringify(repairInvalidResponse.output));
       if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
-        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        requestedToolCalls = salvageRequestedToolCalls(
+          repairedInvalidDecision.toolCalls,
+          availableToolIds,
+          compactToolRegistryIds(plannerToolRegistry),
+          3,
+          "planner"
+        ).toolCalls;
         this.logger.info("Planner invalid tool request repaired", {
           domainId: domain.id,
           toolCallCount: requestedToolCalls.length
@@ -2054,15 +2169,7 @@ export class AgentRuntime {
       }
     }
 
-    const uniqueToolCalls = [];
-    const seen = new Set();
-    for (const toolCall of requestedToolCalls.slice(0, 3)) {
-      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
-        continue;
-      }
-      seen.add(toolCall.toolId);
-      uniqueToolCalls.push(toolCall);
-    }
+    const uniqueToolCalls = requestedToolCalls.slice(0, 3);
 
     if (!uniqueToolCalls.length) {
       return {
@@ -2098,7 +2205,7 @@ export class AgentRuntime {
     }, "planner");
 
     const finalResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -2134,9 +2241,9 @@ export class AgentRuntime {
     });
     await this.billingTracker?.recordResponseUsage({
       response: finalResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "workspace_planning",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id
     });
     this.logger.info("Planner final plan response received", {
@@ -2159,6 +2266,7 @@ export class AgentRuntime {
     generationToolRegistry,
     generationToolContext
   }) {
+    const model = this.resolveAgentModel(appConfig);
     const toolTrace = [];
     const availableToolIds = new Set(compactGenerationToolRegistryIds(generationToolRegistry));
     const generationReasoningEffort = appConfig.agent?.domainGenerationReasoningEffort
@@ -2196,7 +2304,7 @@ export class AgentRuntime {
       }, "analysis");
 
       const finalResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: generationReasoningEffort
         },
@@ -2236,9 +2344,9 @@ export class AgentRuntime {
       });
       await this.billingTracker?.recordResponseUsage({
         response: finalResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "domain_generation",
-        provider: "openai-responses"
+        provider: this.aiProviderLabel
       });
 
       return {
@@ -2256,7 +2364,7 @@ export class AgentRuntime {
       : "If the existing discovery evidence is sufficient, you may return mode=generate with no tool calls.";
 
     const initialResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: generationReasoningEffort
       },
@@ -2275,7 +2383,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Decide which datasource-discovery tools, if any, should be invoked before generating the domain.\n\nStable local analysis primitives: ${JSON.stringify(listDeterministicTools())}\nAvailable data source metadata: ${JSON.stringify(compactSourceMetadataForGenerationPrompt(compactSourceMetadata))}\nCompact datasource discovery summary: ${JSON.stringify(compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence))}\nDomain-generation tool registry: ${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry))}\nAvailable widget archetypes: ${JSON.stringify(compactArchetypeRegistryForGeneration(appConfig))}\nUser prompt: ${prompt}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 4 tool calls from the registry. Choose the tools most likely to deepen semantic understanding of the datasource contents." : "If you already have enough evidence, return mode=generate with no tool calls. If you need more evidence, return mode=call_tools with up to 4 tool calls from the registry."}`
+              text: `Decide which datasource-discovery tools, if any, should be invoked before generating the domain.\n\nOnly the tool ids in the registry below are callable. Do not invent primitive ids or generic tool names.\n\nAvailable data source metadata: ${JSON.stringify(compactSourceMetadataForGenerationPrompt(compactSourceMetadata))}\nCompact datasource discovery summary: ${JSON.stringify(compactSourceDiscoveryEvidenceForGeneration(sourceDiscoveryEvidence))}\nDomain-generation tool registry: ${JSON.stringify(compactGenerationToolRegistry(generationToolRegistry))}\nAvailable widget archetypes: ${JSON.stringify(compactArchetypeRegistryForGeneration(appConfig))}\nUser prompt: ${prompt}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 4 tool calls from the registry. Choose the tools most likely to deepen semantic understanding of the datasource contents." : "If you already have enough evidence, return mode=generate with no tool calls. If you need more evidence, return mode=call_tools with up to 4 tool calls from the registry."}`
             }
           ]
         }
@@ -2291,19 +2399,37 @@ export class AgentRuntime {
     });
     await this.billingTracker?.recordResponseUsage({
       response: initialResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "domain_generation",
-      provider: "openai-responses"
+      provider: this.aiProviderLabel
     });
     let decision = initialResponse.output_text
       ? JSON.parse(initialResponse.output_text)
       : extractJson(JSON.stringify(initialResponse.output));
 
     let requestedToolCalls = Array.isArray(decision.toolCalls) ? decision.toolCalls : [];
+    let salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      selectDeterministicGenerationToolCalls(generationToolRegistry, prompt, maxToolCalls).map((toolCall) => toolCall.toolId),
+      maxToolCalls,
+      "domain-generation"
+    );
+
+    if (requireToolCall && decision.mode !== "call_tools" && salvagedRequest.toolCalls.length) {
+      decision.mode = "call_tools";
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("domain-generation")}`.trim();
+      requestedToolCalls = salvagedRequest.toolCalls;
+      decision.toolCalls = requestedToolCalls;
+      this.logger.info("Domain-generation tool request salvaged locally", {
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "analysis");
+    }
 
     if (requireToolCall && decision.mode !== "call_tools") {
       const repairResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: generationReasoningEffort
         },
@@ -2338,9 +2464,9 @@ export class AgentRuntime {
       });
       await this.billingTracker?.recordResponseUsage({
         response: repairResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "domain_generation",
-        provider: "openai-responses"
+        provider: this.aiProviderLabel
       });
       decision = repairResponse.output_text
         ? JSON.parse(repairResponse.output_text)
@@ -2356,13 +2482,29 @@ export class AgentRuntime {
       };
     }
 
-    const invalidToolIds = requestedToolCalls
-      .map((toolCall) => toolCall?.toolId)
-      .filter((toolId) => toolId && !availableToolIds.has(toolId));
+    salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      selectDeterministicGenerationToolCalls(generationToolRegistry, prompt, maxToolCalls).map((toolCall) => toolCall.toolId),
+      maxToolCalls,
+      "domain-generation"
+    );
+    requestedToolCalls = salvagedRequest.toolCalls;
 
-    if (invalidToolIds.length) {
+    if (salvagedRequest.invalidToolIds.length && requestedToolCalls.length) {
+      decision.toolCalls = requestedToolCalls;
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("domain-generation")}`.trim();
+      this.logger.info("Domain-generation invalid tool ids salvaged locally", {
+        invalidToolIds: salvagedRequest.invalidToolIds,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "analysis");
+    }
+
+    if (salvagedRequest.invalidToolIds.length && !requestedToolCalls.length) {
+      const invalidToolIds = salvagedRequest.invalidToolIds;
       const repairInvalidResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: generationReasoningEffort
         },
@@ -2397,27 +2539,25 @@ export class AgentRuntime {
       });
       await this.billingTracker?.recordResponseUsage({
         response: repairInvalidResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "domain_generation",
-        provider: "openai-responses"
+        provider: this.aiProviderLabel
       });
       const repairedInvalidDecision = repairInvalidResponse.output_text
         ? JSON.parse(repairInvalidResponse.output_text)
         : extractJson(JSON.stringify(repairInvalidResponse.output));
       if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
-        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        requestedToolCalls = salvageRequestedToolCalls(
+          repairedInvalidDecision.toolCalls,
+          availableToolIds,
+          selectDeterministicGenerationToolCalls(generationToolRegistry, prompt, maxToolCalls).map((toolCall) => toolCall.toolId),
+          maxToolCalls,
+          "domain-generation"
+        ).toolCalls;
       }
     }
 
-    const uniqueToolCalls = [];
-    const seen = new Set();
-    for (const toolCall of requestedToolCalls.slice(0, 4)) {
-      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
-        continue;
-      }
-      seen.add(toolCall.toolId);
-      uniqueToolCalls.push(toolCall);
-    }
+    const uniqueToolCalls = requestedToolCalls.slice(0, 4);
 
     if (!uniqueToolCalls.length) {
       return {
@@ -2453,7 +2593,7 @@ export class AgentRuntime {
     }, "analysis");
 
     const finalResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: generationReasoningEffort
       },
@@ -2493,9 +2633,9 @@ export class AgentRuntime {
     });
     await this.billingTracker?.recordResponseUsage({
       response: finalResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "domain_generation",
-      provider: "openai-responses"
+      provider: this.aiProviderLabel
     });
 
     return {
@@ -2515,7 +2655,7 @@ export class AgentRuntime {
       promptLength: prompt.length,
       dataSourceIds: dataSources.map((source) => source.id),
       readySourceCount: sourceDiscoveryEvidence.filter((source) => source.status === "ready").length,
-      provider: this.openai ? "openai" : "fallback"
+      provider: this.openai ? this.aiProviderMode : "fallback"
     }, "analysis");
 
     if (!this.openai) {
@@ -2542,7 +2682,7 @@ export class AgentRuntime {
     });
 
     const response = generationToolLoop.finalResponse ?? await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model: this.resolveAgentModel(appConfig),
       reasoning: {
         effort: appConfig.agent?.domainGenerationReasoningEffort ?? appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -2597,9 +2737,9 @@ export class AgentRuntime {
     if (!generationToolLoop.finalResponse) {
       await this.billingTracker?.recordResponseUsage({
         response,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model: this.resolveAgentModel(appConfig),
         operation: "domain_generation",
-        provider: "openai-responses"
+        provider: this.aiProviderLabel
       });
     }
 
@@ -2640,7 +2780,7 @@ export class AgentRuntime {
       reason,
       recentRunCount: recentRuns.length,
       previewCount: context.previewCount,
-      provider: this.openai ? "openai" : "fallback"
+      provider: this.openai ? this.aiProviderMode : "fallback"
     }, "planner");
 
     if (!this.openai) {
@@ -2702,6 +2842,7 @@ export class AgentRuntime {
 
   async reinterpretFilteredPanel({ domain, panel, context, interaction, runId = null }) {
     const appConfig = await this.configStore.getAppConfig();
+    const model = this.resolveAgentModel(appConfig);
     const run = runId ? await this.configStore.getRun(runId) : null;
     const selectedArchetype =
       run?.selectedArchetype ??
@@ -2749,7 +2890,7 @@ export class AgentRuntime {
     }, "analysis");
 
     const response = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -2790,9 +2931,9 @@ export class AgentRuntime {
 
     const billingEntry = await this.billingTracker?.recordResponseUsage({
       response,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "interactive_reinterpretation",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id,
       panelId: panel.id,
       panelTitle: panel.title,
@@ -2836,6 +2977,7 @@ export class AgentRuntime {
     panelToolSummary,
     panelToolRegistry
   }) {
+    const model = this.resolveAgentModel(appConfig);
     const toolTrace = [];
     const billingEntries = [];
     const availableToolIds = new Set(compactToolRegistryIds(panelToolRegistry));
@@ -2849,7 +2991,7 @@ export class AgentRuntime {
       ? "You must request 1 to 2 derived tool calls from the provided registry before final archetype selection. Do not return mode=select on this step."
       : "If the existing evidence is sufficient, you may return mode=select with no tool calls.";
     const initialResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -2868,7 +3010,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Decide which derived tools, if any, should be invoked before selecting the archetype.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 2 tool calls from the registry. Choose the tools most likely to sharpen archetype selection." : "If you already have enough evidence, return mode=select with no tool calls. If you need more evidence, return mode=call_tools with up to 2 tool calls from the registry."}`
+              text: `Decide which derived tools, if any, should be invoked before selecting the archetype.\n\nOnly the tool ids in the registry below are callable. Do not invent primitive ids or generic tool names.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify({ id: domain.id, name: domain.name }, null, 2)}\n\nPanel summary:\n${JSON.stringify(compactPanel(panel), null, 2)}\n\nArchetype policy:\n${JSON.stringify(archetypeBlock, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(panelToolSummary, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(compactContext, null, 2)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 2 tool calls from the registry. Choose the tools most likely to sharpen archetype selection." : "If you already have enough evidence, return mode=select with no tool calls. If you need more evidence, return mode=call_tools with up to 2 tool calls from the registry."}`
             }
           ]
         }
@@ -2884,9 +3026,9 @@ export class AgentRuntime {
     });
     const initialBillingEntry = await this.billingTracker?.recordResponseUsage({
       response: initialResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "archetype_selection",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id,
       panelId: panel.id,
       panelTitle: panel.title
@@ -2906,9 +3048,31 @@ export class AgentRuntime {
       required: requireToolCall
     }, "planner");
 
-    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+    let requestedToolCalls = Array.isArray(decision.toolCalls) ? [...decision.toolCalls] : [];
+    let salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(panelToolRegistry),
+      2,
+      "archetype-selection"
+    );
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length) && salvagedRequest.toolCalls.length) {
+      requestedToolCalls = salvagedRequest.toolCalls;
+      decision.mode = "call_tools";
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("archetype-selection")}`.trim();
+      decision.toolCalls = requestedToolCalls;
+      this.logger.info("Archetype tool request salvaged locally", {
+        domainId: domain.id,
+        panelId: panel.id,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "planner");
+    }
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length)) {
       const repairResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -2944,9 +3108,9 @@ export class AgentRuntime {
       });
       const repairBillingEntry = await this.billingTracker?.recordResponseUsage({
         response: repairResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "archetype_selection",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title
@@ -2961,6 +3125,7 @@ export class AgentRuntime {
         decision.mode = repairedDecision.mode;
         decision.rationale = repairedDecision.rationale;
         decision.toolCalls = repairedDecision.toolCalls;
+        requestedToolCalls = [...repairedDecision.toolCalls];
         this.logger.info("Archetype tool decision repaired", {
           domainId: domain.id,
           panelId: panel.id,
@@ -2969,18 +3134,36 @@ export class AgentRuntime {
       }
     }
 
-    let requestedToolCalls = [...(decision.toolCalls ?? [])];
-    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
-      const invalidToolIds = requestedToolCalls
-        .map((toolCall) => toolCall?.toolId)
-        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+    salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(panelToolRegistry),
+      2,
+      "archetype-selection"
+    );
+    requestedToolCalls = salvagedRequest.toolCalls;
+
+    if (salvagedRequest.invalidToolIds.length && requestedToolCalls.length) {
+      decision.toolCalls = requestedToolCalls;
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("archetype-selection")}`.trim();
+      this.logger.info("Archetype invalid tool ids salvaged locally", {
+        domainId: domain.id,
+        panelId: panel.id,
+        invalidToolIds: salvagedRequest.invalidToolIds,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "planner");
+    }
+
+    if (salvagedRequest.invalidToolIds.length && !requestedToolCalls.length) {
+      const invalidToolIds = salvagedRequest.invalidToolIds;
       this.logger.info("Archetype selection requested invalid tool ids", {
         domainId: domain.id,
         panelId: panel.id,
         invalidToolIds
       }, "planner");
       const repairInvalidResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -3016,9 +3199,9 @@ export class AgentRuntime {
       });
       const repairInvalidBillingEntry = await this.billingTracker?.recordResponseUsage({
         response: repairInvalidResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "archetype_selection",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title
@@ -3030,7 +3213,13 @@ export class AgentRuntime {
         ? JSON.parse(repairInvalidResponse.output_text)
         : extractJson(JSON.stringify(repairInvalidResponse.output));
       if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
-        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        requestedToolCalls = salvageRequestedToolCalls(
+          repairedInvalidDecision.toolCalls,
+          availableToolIds,
+          compactToolRegistryIds(panelToolRegistry),
+          2,
+          "archetype-selection"
+        ).toolCalls;
         this.logger.info("Archetype invalid tool request repaired", {
           domainId: domain.id,
           panelId: panel.id,
@@ -3049,15 +3238,7 @@ export class AgentRuntime {
       };
     }
 
-    const uniqueToolCalls = [];
-    const seen = new Set();
-    for (const toolCall of requestedToolCalls.slice(0, 2)) {
-      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
-        continue;
-      }
-      seen.add(toolCall.toolId);
-      uniqueToolCalls.push(toolCall);
-    }
+    const uniqueToolCalls = requestedToolCalls.slice(0, 2);
 
     if (!uniqueToolCalls.length) {
       return {
@@ -3096,7 +3277,7 @@ export class AgentRuntime {
     }, "planner");
 
     const finalResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -3132,9 +3313,9 @@ export class AgentRuntime {
     });
     const finalBillingEntry = await this.billingTracker?.recordResponseUsage({
       response: finalResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "archetype_selection",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id,
       panelId: panel.id,
       panelTitle: panel.title
@@ -3177,6 +3358,7 @@ export class AgentRuntime {
     analysisToolRegistry,
     selectedArchetype
   }) {
+    const model = this.resolveAgentModel(appConfig);
     const toolTrace = [];
     const billingEntries = [];
     const availableToolIds = new Set(compactToolRegistryIds(analysisToolRegistry));
@@ -3190,7 +3372,7 @@ export class AgentRuntime {
       ? "You must request 1 to 3 derived tool calls from the provided registry before final analysis. Do not return mode=analyze on this step."
       : "If the existing evidence is sufficient, you may return mode=analyze with no tool calls.";
     const initialResponse = await this.openai.responses.create({
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       reasoning: {
         effort: appConfig.agent?.reasoningEffort ?? "medium"
       },
@@ -3209,7 +3391,7 @@ export class AgentRuntime {
           content: [
             {
               type: "input_text",
-              text: `Decide which derived tools, if any, should be invoked before final analysis.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify(selectedArchetype, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen the analysis report." : "If you already have enough evidence, return mode=analyze with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
+              text: `Decide which derived tools, if any, should be invoked before final analysis.\n\nOnly the tool ids in the registry below are callable. Do not invent primitive ids or generic tool names.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(analysisToolRegistry), null, 2)}\n\nDomain summary:\n${JSON.stringify(analysisDomain, null, 2)}\n\nWorkspace plan summary:\n${JSON.stringify(analysisWorkspacePlan, null, 2)}\n\nPanel summary:\n${JSON.stringify(analysisPanel, null, 2)}\n\nSelected archetype:\n${JSON.stringify(selectedArchetype, null, 2)}\n\nArchetype analysis contract:\n${JSON.stringify(analysisContract, null, 2)}\n\nDeterministic domain tool output:\n${JSON.stringify(analysisDomainTools, null, 2)}\n\nDeterministic panel tool output:\n${JSON.stringify(analysisPanelTools, null, 2)}\n\nMinimal source preview summary:\n${JSON.stringify(analysisContext, null, 2)}\n\nTask:\n${this.buildAnalysisTask(panel, workspacePlan)}\n\n${requireToolCall ? "Return mode=call_tools with 1 to 3 tool calls from the registry. Choose the tools most likely to sharpen the analysis report." : "If you already have enough evidence, return mode=analyze with no tool calls. If you need more evidence, return mode=call_tools with up to 3 tool calls from the registry."}`
             }
           ]
         }
@@ -3225,9 +3407,9 @@ export class AgentRuntime {
     });
     const initialBillingEntry = await this.billingTracker?.recordResponseUsage({
       response: initialResponse,
-      model: appConfig.agent?.model ?? "gpt-5.4",
+      model,
       operation: "panel_analysis",
-      provider: "openai-responses",
+      provider: this.aiProviderLabel,
       domainId: domain.id,
       panelId: panel.id,
       panelTitle: panel.title,
@@ -3250,9 +3432,31 @@ export class AgentRuntime {
       required: requireToolCall
     }, "analysis");
 
-    if (requireToolCall && (decision.mode !== "call_tools" || !(decision.toolCalls ?? []).length)) {
+    let requestedToolCalls = Array.isArray(decision.toolCalls) ? [...decision.toolCalls] : [];
+    let salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(analysisToolRegistry),
+      3,
+      "analysis"
+    );
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length) && salvagedRequest.toolCalls.length) {
+      requestedToolCalls = salvagedRequest.toolCalls;
+      decision.mode = "call_tools";
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("analysis")}`.trim();
+      decision.toolCalls = requestedToolCalls;
+      this.logger.info("Analysis tool request salvaged locally", {
+        runId,
+        panelId: panel.id,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "analysis");
+    }
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length)) {
       const repairResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -3288,9 +3492,9 @@ export class AgentRuntime {
       });
       const repairBillingEntry = await this.billingTracker?.recordResponseUsage({
         response: repairResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "panel_analysis",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title,
@@ -3308,6 +3512,7 @@ export class AgentRuntime {
         decision.mode = repairedDecision.mode;
         decision.rationale = repairedDecision.rationale;
         decision.toolCalls = repairedDecision.toolCalls;
+        requestedToolCalls = [...repairedDecision.toolCalls];
         this.logger.info("Analysis tool decision repaired", {
           runId,
           panelId: panel.id,
@@ -3316,18 +3521,36 @@ export class AgentRuntime {
       }
     }
 
-    let requestedToolCalls = [...(decision.toolCalls ?? [])];
-    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
-      const invalidToolIds = requestedToolCalls
-        .map((toolCall) => toolCall?.toolId)
-        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+    salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(analysisToolRegistry),
+      3,
+      "analysis"
+    );
+    requestedToolCalls = salvagedRequest.toolCalls;
+
+    if (salvagedRequest.invalidToolIds.length && requestedToolCalls.length) {
+      decision.toolCalls = requestedToolCalls;
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("analysis")}`.trim();
+      this.logger.info("Analysis invalid tool ids salvaged locally", {
+        runId,
+        panelId: panel.id,
+        invalidToolIds: salvagedRequest.invalidToolIds,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "analysis");
+    }
+
+    if (salvagedRequest.invalidToolIds.length && !requestedToolCalls.length) {
+      const invalidToolIds = salvagedRequest.invalidToolIds;
       this.logger.info("Analysis requested invalid tool ids", {
         runId,
         panelId: panel.id,
         invalidToolIds
       }, "analysis");
       const repairInvalidResponse = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         reasoning: {
           effort: appConfig.agent?.reasoningEffort ?? "medium"
         },
@@ -3363,9 +3586,9 @@ export class AgentRuntime {
       });
       const repairInvalidBillingEntry = await this.billingTracker?.recordResponseUsage({
         response: repairInvalidResponse,
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model,
         operation: "panel_analysis",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title,
@@ -3380,7 +3603,13 @@ export class AgentRuntime {
         ? JSON.parse(repairInvalidResponse.output_text)
         : extractJson(JSON.stringify(repairInvalidResponse.output));
       if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
-        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        requestedToolCalls = salvageRequestedToolCalls(
+          repairedInvalidDecision.toolCalls,
+          availableToolIds,
+          compactToolRegistryIds(analysisToolRegistry),
+          3,
+          "analysis"
+        ).toolCalls;
         this.logger.info("Analysis invalid tool request repaired", {
           runId,
           panelId: panel.id,
@@ -3399,15 +3628,7 @@ export class AgentRuntime {
       };
     }
 
-    const uniqueToolCalls = [];
-    const seen = new Set();
-    for (const toolCall of requestedToolCalls.slice(0, 3)) {
-      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
-        continue;
-      }
-      seen.add(toolCall.toolId);
-      uniqueToolCalls.push(toolCall);
-    }
+    const uniqueToolCalls = requestedToolCalls.slice(0, 3);
 
     if (!uniqueToolCalls.length) {
       return {
@@ -3642,7 +3863,7 @@ export class AgentRuntime {
         panelId: panel.id,
         panelTitle: panel.title,
         trigger,
-        provider: this.openai ? "openai" : "fallback",
+        provider: this.openai ? this.aiProviderMode : "fallback",
         previewCount: context.previewCount,
         focusPanelId: workspacePlan?.focusPanelId ?? null,
         selectedArchetype: archetypeSelection.selectedArchetype
@@ -3705,7 +3926,7 @@ export class AgentRuntime {
 
       const previousResponseId = appConfig.agent?.reuseResponseHistory ? sessions[domain.id]?.previousResponseId : undefined;
       const response = await this.openai.responses.create({
-        model: appConfig.agent?.model ?? "gpt-5.4",
+        model: this.resolveAgentModel(appConfig),
         store: true,
         background: Boolean(appConfig.agent?.allowBackground),
         ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
@@ -3871,7 +4092,7 @@ export class AgentRuntime {
       context: null,
       localFindings: null,
       report: null,
-      provider: this.openai ? "openai-responses" : "local-fallback",
+      provider: this.openai ? this.aiProviderLabel : "local-fallback",
       trigger,
       progressPhase: "context",
       progressLabel: "Preparing Context",
@@ -4030,9 +4251,9 @@ export class AgentRuntime {
     if (!run.billing?.analysisEntryId) {
       const entry = await this.billingTracker?.recordResponseUsage({
         response,
-        model: currentAppConfig.agent?.model ?? "gpt-5.4",
+        model: this.resolveAgentModel(currentAppConfig),
         operation: "panel_analysis",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: run.domainId,
         panelId: run.panelId,
         panelTitle: run.panelTitle,

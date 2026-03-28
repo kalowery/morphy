@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import OpenAI from "openai";
 import { paths } from "./config-store.js";
 import {
   buildDeterministicPanelSummary,
@@ -233,6 +232,64 @@ function compactToolRegistry(toolRegistry, limit = 12) {
 
 function compactToolRegistryIds(toolRegistry) {
   return (toolRegistry?.tools ?? []).map((tool) => tool.id);
+}
+
+function fallbackPurposeText(scopeLabel = "widget") {
+  return `Deterministic fallback selected valid ${scopeLabel} tools after the model returned no usable tool ids.`;
+}
+
+function salvageRequestedToolCalls(requestedToolCalls = [], availableToolIds = new Set(), fallbackToolIds = [], maxToolCalls = 3, scopeLabel = "widget") {
+  const invalidToolIds = requestedToolCalls
+    .map((toolCall) => toolCall?.toolId)
+    .filter((toolId) => toolId && !availableToolIds.has(toolId));
+  const validToolCalls = [];
+  const seen = new Set();
+
+  for (const toolCall of requestedToolCalls) {
+    if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
+      continue;
+    }
+
+    seen.add(toolCall.toolId);
+    validToolCalls.push(toolCall);
+
+    if (validToolCalls.length >= maxToolCalls) {
+      break;
+    }
+  }
+
+  if (validToolCalls.length) {
+    return {
+      toolCalls: validToolCalls,
+      invalidToolIds,
+      salvaged: invalidToolIds.length > 0,
+      usedFallbackDefaults: false
+    };
+  }
+
+  const fallbackCalls = [];
+  for (const toolId of fallbackToolIds) {
+    if (!toolId || seen.has(toolId) || !availableToolIds.has(toolId)) {
+      continue;
+    }
+
+    seen.add(toolId);
+    fallbackCalls.push({
+      toolId,
+      purpose: fallbackPurposeText(scopeLabel)
+    });
+
+    if (fallbackCalls.length >= maxToolCalls) {
+      break;
+    }
+  }
+
+  return {
+    toolCalls: fallbackCalls,
+    invalidToolIds,
+    salvaged: fallbackCalls.length > 0 || invalidToolIds.length > 0,
+    usedFallbackDefaults: fallbackCalls.length > 0
+  };
 }
 
 function compactToolResultForModel(execution) {
@@ -1507,7 +1564,7 @@ function normalizeGeneratedText(content, fileName = "") {
 }
 
 export class WidgetService {
-  constructor({ configStore, logger, billingTracker = null }) {
+  constructor({ configStore, logger, billingTracker = null, aiRuntime = null }) {
     this.configStore = configStore;
     this.logger = logger ?? {
       trace() {},
@@ -1517,11 +1574,24 @@ export class WidgetService {
       error() {}
     };
     this.billingTracker = billingTracker;
-    this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+    this.aiRuntime = aiRuntime ?? {
+      client: null,
+      mode: "fallback",
+      billingProvider: "local-fallback",
+      model: null
+    };
+    this.openai = this.aiRuntime.client;
+    this.aiProviderMode = this.aiRuntime.mode ?? "fallback";
+    this.aiProviderLabel = this.aiRuntime.billingProvider ?? "local-fallback";
+  }
+
+  resolveCodegenModel(appConfig) {
+    return this.aiRuntime.model ?? appConfig.codegen?.model ?? appConfig.agent?.model ?? "gpt-5.4";
   }
 
   async generateForRun({ domain, panel, run }) {
     const appConfig = await this.configStore.getAppConfig();
+    const codegenModel = this.resolveCodegenModel(appConfig);
     const artifactId = crypto.randomUUID();
     const useDeterministicInteractiveWidget = panel?.interactionMode && panel.interactionMode !== "report";
     this.logger.info("Generating widget artifact", {
@@ -1529,7 +1599,7 @@ export class WidgetService {
       domainId: domain.id,
       panelId: panel.id,
       runId: run.id,
-      provider: useDeterministicInteractiveWidget ? "interactive-fallback" : (this.openai ? "openai" : "fallback")
+      provider: useDeterministicInteractiveWidget ? "interactive-fallback" : (this.openai ? this.aiProviderMode : "fallback")
     }, "widgets");
     const usedOpenAiGeneration = !useDeterministicInteractiveWidget && Boolean(this.openai);
     const generated = usedOpenAiGeneration
@@ -1552,7 +1622,7 @@ export class WidgetService {
       generatedAt: new Date().toISOString(),
       provider: useDeterministicInteractiveWidget
         ? "local-interactive-template"
-        : (usedOpenAiGeneration ? `openai:${appConfig.codegen?.model ?? "gpt-5.4"}` : "local-template")
+        : (usedOpenAiGeneration ? `${this.aiProviderMode}:${codegenModel}` : "local-template")
     };
     const payload = buildWidgetPayload(domain, panel, run, widget);
 
@@ -1562,9 +1632,9 @@ export class WidgetService {
     if (usedOpenAiGeneration && generated?.response) {
       const finalBillingEntry = await this.billingTracker?.recordResponseUsage({
         response: generated.response,
-        model: appConfig.codegen?.model ?? "gpt-5.4",
+        model: codegenModel,
         operation: "widget_generation",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title,
@@ -1591,6 +1661,7 @@ export class WidgetService {
   }
 
   async runWidgetToolLoop({ appConfig, domain, panel, run, widgetContract, panelToolRegistry, panelToolSummary, compactRun }) {
+    const codegenModel = this.resolveCodegenModel(appConfig);
     const toolTrace = [];
     const billingEntries = [];
     const availableToolIds = new Set(compactToolRegistryIds(panelToolRegistry));
@@ -1606,9 +1677,9 @@ export class WidgetService {
     const recordUsage = async (response) => {
       const billingEntry = await this.billingTracker?.recordResponseUsage({
         response,
-        model: appConfig.codegen?.model ?? "gpt-5.4",
+        model: codegenModel,
         operation: "widget_generation",
-        provider: "openai-responses",
+        provider: this.aiProviderLabel,
         domainId: domain.id,
         panelId: panel.id,
         panelTitle: panel.title,
@@ -1622,7 +1693,7 @@ export class WidgetService {
     };
 
     const initialResponse = await this.openai.responses.create({
-      model: appConfig.codegen?.model ?? "gpt-5.4",
+      model: codegenModel,
       reasoning: {
         effort: appConfig.codegen?.reasoningEffort ?? "medium"
       },
@@ -1641,7 +1712,7 @@ export class WidgetService {
           content: [
             {
               type: "input_text",
-              text: `Decide which derived tools, if any, should be invoked before final widget generation.\n\nStable local analysis primitives:\n${JSON.stringify(listDeterministicTools(), null, 2)}\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nPanel identity:\n${JSON.stringify({
+              text: `Decide which derived tools, if any, should be invoked before final widget generation.\n\nOnly the tool ids in the registry below are callable. Do not invent primitive ids or generic tool names.\n\nPanel-specific exposed tool registry:\n${JSON.stringify(compactToolRegistry(panelToolRegistry), null, 2)}\n\nPanel identity:\n${JSON.stringify({
                 id: panel.id,
                 title: panel.title,
                 summary: panel.summary,
@@ -1686,11 +1757,31 @@ export class WidgetService {
       required: requireToolCall
     }, "widgets");
 
-    let requestedToolCalls = [...(decision.toolCalls ?? [])];
+    let requestedToolCalls = Array.isArray(decision.toolCalls) ? [...decision.toolCalls] : [];
+    let salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(panelToolRegistry),
+      3,
+      "widget-generation"
+    );
+
+    if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length) && salvagedRequest.toolCalls.length) {
+      requestedToolCalls = salvagedRequest.toolCalls;
+      decision.mode = "call_tools";
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("widget-generation")}`.trim();
+      decision.toolCalls = requestedToolCalls;
+      this.logger.info("Widget tool request salvaged locally", {
+        runId: run.id,
+        panelId: panel.id,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "widgets");
+    }
 
     if (requireToolCall && (decision.mode !== "call_tools" || !requestedToolCalls.length)) {
       const repairResponse = await this.openai.responses.create({
-        model: appConfig.codegen?.model ?? "gpt-5.4",
+        model: codegenModel,
         reasoning: {
           effort: appConfig.codegen?.reasoningEffort ?? "medium"
         },
@@ -1731,15 +1822,35 @@ export class WidgetService {
         decision.mode = repairedDecision.mode;
         decision.rationale = repairedDecision.rationale;
         requestedToolCalls = repairedDecision.toolCalls;
+        decision.toolCalls = requestedToolCalls;
       }
     }
 
-    if (requestedToolCalls.some((toolCall) => toolCall?.toolId && !availableToolIds.has(toolCall.toolId))) {
-      const invalidToolIds = requestedToolCalls
-        .map((toolCall) => toolCall?.toolId)
-        .filter((toolId) => toolId && !availableToolIds.has(toolId));
+    salvagedRequest = salvageRequestedToolCalls(
+      requestedToolCalls,
+      availableToolIds,
+      compactToolRegistryIds(panelToolRegistry),
+      3,
+      "widget-generation"
+    );
+    requestedToolCalls = salvagedRequest.toolCalls;
+
+    if (salvagedRequest.invalidToolIds.length && requestedToolCalls.length) {
+      decision.toolCalls = requestedToolCalls;
+      decision.rationale = `${decision.rationale ?? ""} ${fallbackPurposeText("widget-generation")}`.trim();
+      this.logger.info("Widget invalid tool ids salvaged locally", {
+        runId: run.id,
+        panelId: panel.id,
+        invalidToolIds: salvagedRequest.invalidToolIds,
+        toolIds: requestedToolCalls.map((toolCall) => toolCall.toolId),
+        usedFallbackDefaults: salvagedRequest.usedFallbackDefaults
+      }, "widgets");
+    }
+
+    if (salvagedRequest.invalidToolIds.length && !requestedToolCalls.length) {
+      const invalidToolIds = salvagedRequest.invalidToolIds;
       const repairInvalidResponse = await this.openai.responses.create({
-        model: appConfig.codegen?.model ?? "gpt-5.4",
+        model: codegenModel,
         reasoning: {
           effort: appConfig.codegen?.reasoningEffort ?? "medium"
         },
@@ -1777,7 +1888,13 @@ export class WidgetService {
         ? JSON.parse(repairInvalidResponse.output_text)
         : extractJson(JSON.stringify(repairInvalidResponse.output));
       if (repairedInvalidDecision.mode === "call_tools" && (repairedInvalidDecision.toolCalls ?? []).length) {
-        requestedToolCalls = repairedInvalidDecision.toolCalls;
+        requestedToolCalls = salvageRequestedToolCalls(
+          repairedInvalidDecision.toolCalls,
+          availableToolIds,
+          compactToolRegistryIds(panelToolRegistry),
+          3,
+          "widget-generation"
+        ).toolCalls;
       }
     }
 
@@ -1791,15 +1908,7 @@ export class WidgetService {
       };
     }
 
-    const uniqueToolCalls = [];
-    const seen = new Set();
-    for (const toolCall of requestedToolCalls.slice(0, 3)) {
-      if (!toolCall?.toolId || seen.has(toolCall.toolId) || !availableToolIds.has(toolCall.toolId)) {
-        continue;
-      }
-      seen.add(toolCall.toolId);
-      uniqueToolCalls.push(toolCall);
-    }
+    const uniqueToolCalls = requestedToolCalls.slice(0, 3);
 
     if (!uniqueToolCalls.length) {
       return {
@@ -1847,11 +1956,12 @@ export class WidgetService {
   }
 
   async generateWithOpenAI({ appConfig, domain, panel, run }) {
+    const codegenModel = this.resolveCodegenModel(appConfig);
     this.logger.debug("Requesting OpenAI widget generation", {
       domainId: domain.id,
       panelId: panel.id,
       runId: run.id,
-      model: appConfig.codegen?.model ?? "gpt-5.4",
+      model: codegenModel,
       archetype: run.selectedArchetype ?? null
     }, "widgets");
     const archetype = getArchetypeDefinition(appConfig, domain, run.selectedArchetype);
@@ -1870,7 +1980,7 @@ export class WidgetService {
       compactRun
     });
     const response = await this.openai.responses.create({
-      model: appConfig.codegen?.model ?? "gpt-5.4",
+      model: codegenModel,
       reasoning: {
         effort: appConfig.codegen?.reasoningEffort ?? "medium"
       },

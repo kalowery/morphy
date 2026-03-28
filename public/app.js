@@ -538,9 +538,16 @@ function renderSourcePreviews() {
 }
 
 function renderAgentStatus(agent) {
+  const credentialHint = agent.hasCredentials
+    ? (
+        agent.usesConfigFile
+          ? `${agent.providerName ?? agent.providerId ?? agent.mode} is configured via ${agent.configPath ?? "config file"}.`
+          : "OPENAI_API_KEY is configured for direct OpenAI Responses API usage."
+      )
+    : "No AI provider credentials detected. Local fallback reporting remains available.";
   elements.agentStatus.innerHTML = `
     <p class="lede">Provider: <strong>${agent.mode}</strong></p>
-    <p class="hint">${agent.hasApiKey ? "OpenAI API key detected. Background analysis uses the Responses API." : "No OpenAI API key detected. Local fallback reporting remains available."}</p>
+    <p class="hint">${credentialHint}</p>
   `;
 }
 

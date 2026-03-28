@@ -29,6 +29,7 @@ Main subsystems:
 - `src/services/agent-runtime.js`
 - `src/services/data-sources.js`
 - `src/services/analysis-tools.js`
+- `src/services/model-provider-config.js`
 - `src/services/widget-service.js`
 - `src/services/refresh-coordinator.js`
 - `src/services/config-store.js`
@@ -70,6 +71,19 @@ Current configured model:
 
 - `gpt-5.4` for general agent work
 - `gpt-5.4` for codegen/widget generation as well
+
+Morphy now supports a Codex-style provider config with:
+
+- top-level `model`
+- top-level `model_provider`
+- `[model_providers.<id>]` entries with `base_url`, `wire_api`, `env_http_headers`, and `http_headers`
+
+Provider config precedence is:
+
+1. explicit `--config /path/to/config.toml`
+2. discovered local Morphy TOML config
+3. `OPENAI_API_KEY`
+4. local fallback mode
 
 ### Deterministic local tooling
 

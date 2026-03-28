@@ -89,7 +89,13 @@ The server runtime in [src/services/agent-runtime.js](src/services/agent-runtime
 - persisting analysis state
 - optionally delegating widget generation
 
-If `OPENAI_API_KEY` is present, Morphy uses OpenAI through the Node SDK. If no key is present, it falls back to local synthesized output so the app remains explorable.
+Morphy now resolves AI provider/auth configuration in this order:
+
+- a Morphy/Codex-style TOML config file with top-level `model`, top-level `model_provider`, and `[model_providers.<id>]`
+- `OPENAI_API_KEY` for direct OpenAI Responses API usage
+- local fallback reporting when neither is configured
+
+When a provider config is present and selects a `model_provider`, it takes precedence over `OPENAI_API_KEY`. Morphy currently supports `wire_api = "responses"` providers and maps `env_http_headers` / `http_headers` into outbound request headers.
 
 The current direction is to keep more numerical and relational work local. The model is no longer treated as the place to do basic data reduction when Morphy can do that deterministically on the server first.
 
@@ -267,17 +273,49 @@ For historical datasets, explicit time windows matter. Without `start`, `end`, a
 npm install
 ```
 
-2. Export an API key if you want live OpenAI-backed planning, analysis, and widget generation.
+2. Configure an AI provider. You can either export `OPENAI_API_KEY` for direct OpenAI usage, or point Morphy at a Codex-style provider config.
 
 ```bash
 export OPENAI_API_KEY=your_key_here
 ```
+
+Example provider config:
+
+```toml
+model = "gpt-5.4"
+model_provider = "amd_gateway"
+
+[model_providers.amd_gateway]
+name = "AMD Gateway"
+base_url = "https://llm-api.amd.com/OpenAI"
+wire_api = "responses"
+env_http_headers = { "Ocp-Apim-Subscription-Key" = "LLM_GATEWAY_KEY", "user" = "USER" }
+http_headers = { "api-version" = "preview" }
+```
+
+Morphy auto-discovers `morphy.config.toml`, `config.toml` in the repo root, or `~/.morphy/config.toml`. You can also provide an explicit config path at launch time.
 
 3. Start the server.
 
 ```bash
 npm start
 ```
+
+Or:
+
+```bash
+npm start -- --config /path/to/config.toml
+```
+
+If you need the local HPCFund VictoriaMetrics dataset on macOS, this repo also includes a helper for the native Homebrew binary:
+
+```bash
+./scripts/victoria-metrics-macos.sh start --storage-path /path/to/tsdb
+./scripts/victoria-metrics-macos.sh status
+./scripts/victoria-metrics-macos.sh stop
+```
+
+You can also set `VICTORIA_TSDB_PATH=/path/to/tsdb` instead of passing `--storage-path`.
 
 4. Open the app in a browser.
 

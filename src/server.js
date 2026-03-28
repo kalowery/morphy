@@ -15,21 +15,49 @@ import {
   buildPanelInteractionState,
   getInteractionDateRangeOverrides
 } from "./services/analysis-tools.js";
+import { resolveAiRuntime } from "./services/model-provider-config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export async function createApp() {
+function parseServerCliArgs(argv = []) {
+  const parsed = {
+    configPath: null
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
+    if (arg === "--config" && argv[index + 1]) {
+      parsed.configPath = argv[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--config=")) {
+      parsed.configPath = arg.slice("--config=".length);
+    }
+  }
+
+  return parsed;
+}
+
+export async function createApp({ modelProviderConfigPath = null } = {}) {
   const app = express();
   const eventBus = new EventEmitter();
   const configStore = new ConfigStore();
   const appConfig = await configStore.getAppConfig();
   const diagnostics = buildServerDiagnostics(appConfig);
   const logger = createLogger({ namespace: "server", diagnostics });
+  const aiRuntime = await resolveAiRuntime({
+    configPath: modelProviderConfigPath,
+    projectRoot: path.join(__dirname, ".."),
+    logger
+  });
   const billingTracker = new BillingTracker({ configStore, eventBus, logger });
   await billingTracker.repairLedgerCosts();
-  const widgetService = new WidgetService({ configStore, logger, billingTracker });
-  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService, logger, billingTracker });
+  const widgetService = new WidgetService({ configStore, logger, billingTracker, aiRuntime });
+  const agentRuntime = new AgentRuntime({ configStore, eventBus, widgetService, logger, billingTracker, aiRuntime });
   const refreshCoordinator = new RefreshCoordinator({ configStore, agentRuntime, eventBus, logger });
 
   app.use(express.json({ limit: "1mb" }));
@@ -113,8 +141,16 @@ export async function createApp() {
         liveStateUpdatedAt: liveState.updatedAt ?? null,
         spendSummary,
         agent: {
-          mode: process.env.OPENAI_API_KEY ? "openai-responses" : "fallback",
-          hasApiKey: Boolean(process.env.OPENAI_API_KEY)
+          mode: aiRuntime.mode,
+          providerId: aiRuntime.providerId,
+          providerName: aiRuntime.providerName,
+          wireApi: aiRuntime.wireApi,
+          baseUrl: aiRuntime.baseUrl,
+          model: aiRuntime.model ?? appConfig.agent?.model ?? appConfig.codegen?.model ?? null,
+          hasApiKey: aiRuntime.hasApiKey,
+          hasCredentials: aiRuntime.hasCredentials,
+          usesConfigFile: aiRuntime.usesConfigFile,
+          configPath: aiRuntime.configPath
         }
       });
     } catch (error) {
@@ -623,14 +659,16 @@ export async function createApp() {
 
   app.locals.logger = logger;
   app.locals.refreshCoordinator = refreshCoordinator;
+  app.locals.aiRuntime = aiRuntime;
   return app;
 }
 
 export async function startServer(
   port = Number(process.env.PORT ?? process.env.APP_PORT ?? 3000),
-  host = process.env.HOST ?? "127.0.0.1"
+  host = process.env.HOST ?? "127.0.0.1",
+  options = {}
 ) {
-  const app = await createApp();
+  const app = await createApp(options);
   const server = http.createServer(app);
 
   await new Promise((resolve) => {
@@ -644,8 +682,11 @@ export async function startServer(
 }
 
 if (process.argv[1] === __filename) {
+  const cliArgs = parseServerCliArgs(process.argv.slice(2));
   const port = Number(process.env.PORT ?? process.env.APP_PORT ?? 3000);
   const host = process.env.HOST ?? "127.0.0.1";
-  const { server } = await startServer(port, host);
+  const { server } = await startServer(port, host, {
+    modelProviderConfigPath: cliArgs.configPath
+  });
   console.log(`Morphy listening on http://${host}:${server.address().port}`);
 }
