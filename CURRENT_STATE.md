@@ -188,8 +188,6 @@ Important recent change:
 - `job-detail-sheet` was removed from the global shared archetype core
 - it is now scoped to the HPCFund domain
 
-This cleanup is not yet committed as of this handoff.
-
 ## Widgets
 
 ### Two widget modes now exist
@@ -334,19 +332,14 @@ Transient create tests were run (not saved as domains) for:
 
 These showed that create-time grounding can produce semantically meaningful domains from actual datasource contents.
 
-## Important Current Uncommitted Changes
+## Repository State
 
-At the time this file was written, the worktree includes uncommitted cleanup around archetype scoping and generic-runtime de-HPC-ification, including:
+At the time this file was last updated:
 
-- `config/app.config.json`
-- `data/domains/hpcfund-cluster-observability.json`
-- `public/app.js`
-- `src/lib/archetypes.js`
-- `src/services/agent-runtime.js`
-- `src/services/analysis-tools.js`
-- `src/services/widget-service.js`
+- the domain-scoped archetype cleanup had been committed and pushed
+- the repository worktree was clean
 
-Check `git status --short` before assuming the worktree is clean.
+Still verify `git status --short` before assuming there are no local changes.
 
 ## Current Open Issues / Risks
 
@@ -400,7 +393,7 @@ If resuming development immediately, the most targeted next task is:
 2. rerun the HPCFund smoke test for:
    - `job-explorer`
    - `fleet-health`
-3. commit the current cleanup batch once that passes
+3. verify that the same behavior holds both on the normal datasource-connected path and on degraded fallback paths
 
 ## Useful Smoke-Test Procedure
 
